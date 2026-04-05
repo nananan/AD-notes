@@ -1,5 +1,13 @@
 # AD Basi
 
+Link Usati:
+- https://0xd4y.com/2023/02/28/Active-Directory-Pentesting-Notes/
+
+
+## Account Computer vs Account Utente
+- Gli account computer hanno password randomiche di 120 caratteri che ruotano automaticamente ogni 30 giorni — praticamente impossibili da craccare. 
+- Gli account utente usati come service account invece spesso hanno password semplici e che non cambiano mai, tipo Summer2023! — e questo li rende il target perfetto del Kerberoasting.
+
 ## Local Account vs Domain Account
 - Un **local account** esiste solo sulla macchina locale — è salvato nel SAM database di quel PC. Non ha nessuna visibilità nel dominio, funziona solo per autenticarsi localmente. Esempi tipici sono Administrator, Guest, o account creati manualmente sulla macchina.
 
@@ -51,3 +59,44 @@ systeminfo | findstr /i "domain"
 - Se vedi un nome tipo Domain: corp.local — sei joinato a un dominio AD.
 
 
+# Kerberos
+![alt text](images/image.png)
+
+#### Fase 1 — AS-REQ / AS-REP (client → KDC)
+Mario manda la richiesta con il timestamp cifrato. Il KDC verifica chi è Mario e gli rilascia il TGT. Questo TGT è la prova che Mario si è autenticato correttamente — è cifrato con la chiave di krbtgt, quindi Mario non può leggerlo né modificarlo, può solo trasportarlo.
+
+#### Fase 2 — TGS-REQ / TGS-REP (client → KDC, rimanda il TGT)
+Mario vuole accedere al file server. Rimanda il TGT al DC dicendo "ho già provato di essere Mario, ora ho bisogno di un ticket specifico per cifs/fileserver". Il DC decifra il TGT con la chiave di krbtgt, verifica che sia valido, e rilascia un TGS (Ticket Granting Service) — un ticket specifico per quel servizio, cifrato con la chiave del file server.
+
+#### Il TGS è firmato con la chiave del Service Owner - Chi è il service owner
+- Quando un servizio viene avviato su una macchina Windows, gira nel contesto di sicurezza di un account specifico. Quell'account è il service owner.
+
+> Esempi concreti:
+> - il file server gira tipicamente come NT AUTHORITY\SYSTEM — che in AD corrisponde all'account computer della macchina, tipo FILESERVER$. Quindi il TGS per cifs/fileserver è cifrato con l'hash di FILESERVER$.
+> - un servizio SQL custom invece può girare come un utente di dominio dedicato, tipo svc-sql@corp.local. Il TGS per MSSQLSvc/sqlserver è cifrato con l'hash di svc-sql.
+> - un servizio IIS può girare come svc-web@corp.local. Il TGS per http/webserver è cifrato con l'hash di svc-web.
+
+
+Quando chiedi un TGS per un servizio, il DC te lo rilascia senza verificare se hai effettivamente accesso a quel servizio — ti dà semplicemente il ticket cifrato. Quel ticket è cifrato con l'hash del service owner.
+- Se il service owner è un account utente di dominio (non un account computer), il suo hash è derivato da una password scelta da un umano — quindi potenzialmente debole e craccabile offline.
+
+##### Perché il Client (Mario) rimanda il TGT e non la password?
+- Il punto chiave è che Mario rimanda il TGT invece della password perché il TGT è una prova di identità già validata — il DC non deve riautenticare Mario da zero ogni volta. È come avere un badge giornaliero: lo mostri all'ingresso una volta sola al mattino, poi lo usi per aprire tutte le porte interne senza tornare ogni volta alla reception.
+- La password non viaggia mai sulla rete dopo la prima fase — questo è uno dei vantaggi fondamentali di Kerberos rispetto a NTLM.
+
+##### Quando il DC riceve il TGT nella fase 2, "verificare che sia valido" significa fare questi controlli:
+- Prima cosa: lo decifra con l'hash di krbtgt. Se la decifratura produce dati sensati, significa che il TGT è stato creato da lui stesso — nessun altro conosce quella chiave, quindi non può essere stato falsificato.
+- Dentro il TGT decifrato trova:
+    - l'identità dell'utente (Mario)
+    - il timestamp di quando è stato emesso
+    - la scadenza (di default 10 ore)
+    - i SID dell'utente e dei suoi gruppi
+- Poi controlla:
+    - che non sia scaduto
+    - che non sia stato emesso nel futuro (clock skew)
+    - che l'utente non sia stato disabilitato o bloccato nel frattempo
+
+> L'ultimo punto è interessante — ed è anche una debolezza di Kerberos. Il DC non consulta un database di "TGT revocati". Se Mario viene licenziato e il suo account viene disabilitato, i TGT già emessi rimangono validi fino alla loro scadenza naturale. Per questo il Golden Ticket è così persistente — anche se cambi la password dell'utente, il ticket forgiato continua a funzionare finché non cambi krbtgt.
+
+#### Fase 3 — AP-REQ (client → servizio)
+Mario presenta il TGS direttamente al file server. Il file server lo decifra con la propria chiave, verifica che sia valido, e concede l'accesso. Il DC non è più coinvolto.
