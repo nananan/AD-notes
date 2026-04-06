@@ -18,6 +18,25 @@
   - [Il DC non memorizza chiavi di sessioni!](#il-dc-non-memorizza-chiavi-di-sessioni)
     - [Il DC è stateless](#il-dc-è-stateless)
 - [NetNTML](#netntml)
+  - [Come funzionano gli Account in Windows \& SAM](#come-funzionano-gli-account-in-windows--sam)
+    - [Cosa succede quando crei o cambi una password](#cosa-succede-quando-crei-o-cambi-una-password)
+    - [Perché MD4 e non qualcosa di più sicuro](#perché-md4-e-non-qualcosa-di-più-sicuro)
+    - [Cosa c'è nel SAM esattamente](#cosa-cè-nel-sam-esattamente)
+    - [Come è protetto il SAM](#come-è-protetto-il-sam)
+  - [Il flusso NTLM con account di dominio](#il-flusso-ntlm-con-account-di-dominio)
+  - [NetNTLM con account locali!](#netntlm-con-account-locali)
+    - [Il flusso NTLM con account locale:](#il-flusso-ntlm-con-account-locale)
+    - [Come fa il server ad avere gli NTLM degli utenti?](#come-fa-il-server-ad-avere-gli-ntlm-degli-utenti)
+    - [La differenza con account di dominio](#la-differenza-con-account-di-dominio)
+  - [NetNTLM non è vulnerabile a attachi replay "classici"](#netntlm-non-è-vulnerabile-a-attachi-replay-classici)
+    - [NetNTLM è vulnerabile al NTLM Relay!](#netntlm-è-vulnerabile-al-ntlm-relay)
+      - [Perché funziona](#perché-funziona)
+- [LAPS](#laps)
+  - [Qual è il problema?](#qual-è-il-problema)
+- [LDAP](#ldap)
+  - [Le operazioni base](#le-operazioni-base)
+  - [Come lo usi in pratica](#come-lo-usi-in-pratica)
+  - [Relazione con Kerberos](#relazione-con-kerberos)
 
 
 # AD Basi
@@ -162,4 +181,158 @@ Lo stesso principio vale per il TGS — il DC genera una nuova chiave di session
 - Tutto lo stato necessario viaggia dentro i ticket stessi, cifrato in modo che solo il destinatario corretto possa leggerlo.
 
 # NetNTML
+
+## Come funzionano gli Account in Windows & SAM
+
+### Cosa succede quando crei o cambi una password
+Quando Mario imposta la password Password123! su una macchina locale, Windows non salva la stringa Password123! da nessuna parte. La converte immediatamente in hash NTLM con la funzione MD4:
+
+```
+MD4("Password123!") → aad3b435b51404eeaad3b435b51404ee:8846f7eaee8fb117ad06bdd830b7586c
+```
+
+E salva solo quell'hash nel SAM. La password originale viene scartata — Windows non ne ha più bisogno perché per verificare l'autenticità usa sempre e solo l'hash.
+
+### Perché MD4 e non qualcosa di più sicuro
+È una scelta legacy degli anni '90 — MD4 è veloce, deterministico, e all'epoca sembrava sufficiente. Il problema è che oggi è considerato crittograficamente rotto, non ha salt (quindi due utenti con la stessa password hanno lo stesso hash), ed è così veloce che hashcat su una GPU moderna prova miliardi di combinazioni al secondo.
+
+
+### Cosa c'è nel SAM esattamente
+Il SAM contiene una riga per ogni utente locale con:
+
+- username
+- RID (identificatore numerico dell'utente)
+- LM hash (legacy, quasi sempre disabilitato oggi)
+- NTLM hash
+
+```
+Administrator:500:aad3b435b51404eeaad3b435b51404ee:8846f7eaee8fb117ad06bdd830b7586c
+Mario:1001:aad3b435b51404eeaad3b435b51404ee:8846f7eaee8fb117ad06bdd830b7586c
+```
+La prima parte `aad3b435...` è l'LM hash vuoto — significa che LM è disabilitato. La seconda parte è l'NTLM hash reale.
+
+### Come è protetto il SAM
+Il SAM è cifrato con una chiave chiamata syskey (o bootkey), derivata dalla registry di sistema. Per questo non puoi semplicemente copiare il file SAM da una macchina accesa — è locked da Windows e cifrato. Mimikatz riesce a leggerlo perché gira come SYSTEM e usa le API di Windows per accedere alla memoria di lsass, dove gli hash sono già decifrati e pronti all'uso.
+
+
+## Il flusso NTLM con account di dominio
+
 ![alt text](images/AD/netNTLM.png)
+
+
+## NetNTLM con account locali!
+Per gli account locali il flusso NTLM è lo stesso, ma invece di contattare il DC per verificare la password, il server verifica tutto da solo usando il SAM locale.
+
+### Il flusso NTLM con account locale:
+- Step 1 - Negotiation: Il client dice al server "voglio autenticarmi, supporto questi metodi".
+- Step 2 - Challenge: Il server genera un numero casuale (challenge) e lo manda al client.
+- Step 3 - Response: Il client prende la password dell'utente, la converte in hash NTLM, e cifra il challenge con quell'hash. Manda il risultato al server.
+- Step 4 - Verifica locale: Il server apre il SAM, recupera l'hash NTLM dell'utente locale, cifra lo stesso challenge con quell'hash, e confronta i due risultati. Se coincidono → accesso concesso. Nessun DC coinvolto.
+
+### Come fa il server ad avere gli NTLM degli utenti?
+Con un account locale non stai usando le credenziali di Mario come persona — stai usando un account che esiste indipendentemente su ogni macchina. È come se ogni macchina avesse il suo Administrator separato, che non ha nulla a che fare con l'Administrator di un'altra macchina.
+
+```
+PC-Mario          SERVER-01         SERVER-02
+---------         ---------         ---------
+Administrator     Administrator     Administrator
+hash: AAA         hash: BBB         hash: BBB
+Mario-local       (non esiste)      (non esiste)
+hash: CCC
+```
+
+In questo esempio Mario non può autenticarsi a SERVER-01 con il suo account locale perché quell'account non esiste lì. Può autenticarsi a SERVER-02 solo se conosce la password dell'Administrator di SERVER-02 — che è un account completamente separato dal suo.
+
+> Il motivo per cui il Pass-the-Hash funziona tra più macchine è proprio perché in molti ambienti l'IT ha creato l'account Administrator locale con la stessa password su tutte le macchine — quindi tutti i SAM hanno lo stesso hash, anche se sono fisicamente separati.
+
+### La differenza con account di dominio
+Con un account di dominio il server non ha l'hash — ce l'ha solo il DC. Quindi al step 4 invece di verificare localmente, il server contatta il DC e gli manda il challenge e la response. Il DC fa la verifica e risponde "valido" o "non valido".
+
+```
+Account locale:    client → server → SAM locale → ok
+Account dominio:   client → server → DC → ok
+```
+
+## NetNTLM non è vulnerabile a attachi replay "classici"
+Il challenge è un numero casuale generato dal server ad ogni sessione. Se un attaccante cattura la response di Mario e prova a rimandarla identica in un secondo momento, il server genera un challenge diverso — e la response catturata non corrisponde più al nuovo challenge, quindi viene rifiutata.
+```
+Sessione 1:  challenge = ABC123  →  response = XYZ (valida)
+Sessione 2:  challenge = QWE456  →  response = XYZ (non valida, challenge diverso)
+```
+
+### NetNTLM è vulnerabile al NTLM Relay!
+Il vero attacco non è il replay diretto, ma il relay. L'attaccante si mette in mezzo tra il client e il server e usa la response di Mario in tempo reale verso un altro server.
+```
+Mario  ←→  [attaccante]  ←→  SERVER
+```
+
+Il flusso concreto:
+
+- l'attaccante fa partire Responder sulla rete per intercettare autenticazioni
+- Mario cerca di connettersi a \\attaccante\share (magari tramite un link in un documento, una email, o semplicemente NBT-NS poisoning)
+- l'attaccante riceve il challenge/response di Mario
+nello stesso momento lo usa per autenticarsi a SERVER come Mario
+- SERVER non sa che sta parlando con un attaccante — la response è valida perché è stata generata da Mario
+
+```
+# Intercetta autenticazioni NTLM sulla rete
+Responder.py -I eth0
+
+# Relay verso un target specifico
+ntlmrelayx.py -t smb://192.168.1.10 -smb2support
+```
+
+> Perché Kerberos non ha questo problema
+In Kerberos il ticket contiene il nome del servizio destinatario — non puoi usare un ticket per cifs/server01 verso cifs/server02 perché il nome non corrisponde. In NetNTLM invece la response non contiene nessuna informazione sul server di destinazione, quindi può essere relayata ovunque. //TODO -> può veramente essere relayata ovunque? non fallisce il controllo della challenge poi???
+
+#### Perché funziona
+- Il server ha generato lui stesso il challenge ABC123, riceve una response valida per quel challenge, e la accetta. Dal suo punto di vista sta parlando con Mario — non sa che in mezzo c'è un attaccante che ha fatto da proxy.
+- Il trucco è che l'attaccante usa lo stesso challenge del server verso Mario — così la response che Mario calcola è valida esattamente per quel server.
+
+# LAPS
+![alt text](images/AD/laps.png)
+
+Il flusso step by step
+- Step 1: Mario vuole stampare e inserisce le sue credenziali AD (corp\mario + password) nel pannello della stampante o nel driver.
+- Step 2: La stampante non sa verificare credenziali AD da sola — non ha un SAM, non è joinata al dominio in modo completo. Quindi usa il suo stesso account AD (un account di servizio tipo svc-printer@corp.local) per fare un LDAP bind al DC — cioè si autentica al DC come se stessa per poter fare query LDAP.
+- Step 3: Il DC accetta il bind della stampante e le dà accesso LDAP.
+- Step 4: La stampante fa una LDAP search per trovare l'utente Mario — cerca nel dominio l'oggetto utente corrispondente all'username inserito.
+- Step 5: Il DC risponde con i dati dell'utente Mario (DN, attributi, ecc.).
+- Step 6: Ora la stampante prova a fare un LDAP bind con le credenziali di Mario — manda username e password di Mario al DC per verificare se sono corrette. Questo è il passaggio critico.
+- Step 7: Il DC verifica le credenziali e risponde alla stampante: valide o non valide.
+- Step 8: Se il DC ha risposto positivamente, la stampante autentica Mario e accetta il print job.
+
+## Qual è il problema?
+- Il problema sta nel step 6 — la stampante manda le credenziali di Mario in chiaro (o con binding semplice) al DC tramite LDAP. Se LDAP non è cifrato con TLS (LDAPS), quelle credenziali viaggiano in chiaro sulla rete e sono intercettabili con uno sniffer.
+- Inoltre questo meccanismo bypassa completamente Kerberos — usa LDAP simple bind invece, che è molto meno sicuro. Molti dispositivi di rete legacy (stampanti, scanner, fotocopiatrici) usano ancora questo approccio perché è più semplice da implementare.
+  
+```
+# Intercetti il traffico LDAP non cifrato sulla rete
+# con Wireshark filtrando per porta 389 (LDAP) invece di 636 (LDAPS)
+# e vedi le credenziali in chiaro nel bind request
+```
+
+# LDAP
+- LDAP (Lightweight Directory Access Protocol) è il protocollo con cui si interroga e modifica un directory service — in pratica è il linguaggio che usi per parlare con Active Directory.
+- LDAP gira sulla porta 389 in chiaro — tutto il traffico è leggibile da chiunque sulla rete. LDAPS (LDAP over TLS) gira sulla porta 636 ed è cifrato. In molti ambienti legacy LDAPS non è configurato, quindi le query LDAP viaggiano in chiaro — incluse le credenziali nei bind request, come abbiamo visto nella stampante.
+- Pensa ad AD come a un enorme database di oggetti — utenti, computer, gruppi, GPO, ecc. LDAP è il protocollo che ti permette di fare query su quel database, tipo "dammi tutti gli utenti del gruppo Domain Admins" o "dammi tutti i computer con Windows Server 2019".
+- Se AD è un rubrica telefonica gigante dell'azienda, LDAP è il modo in cui fai le ricerche su quella rubrica — "cerca tutti i dipendenti del reparto IT", "trova il numero di Mario Rossi", "aggiungi un nuovo contatto".
+
+## Le operazioni base
+![alt text](images/AD/ldap_operazioni_base.png)
+
+## Come lo usi in pratica
+PowerView sotto il cofano usa LDAP per tutte le sue query. Quando fai Get-DomainUser, PowerView sta facendo una query LDAP al DC chiedendo tutti gli oggetti di tipo user. Potresti fare la stessa cosa manualmente:
+```
+# Query LDAP diretta senza PowerView
+$searcher = New-Object DirectoryServices.DirectorySearcher
+$searcher.Filter = "(objectClass=user)"
+$searcher.FindAll()
+
+# Oppure con ldapsearch su Linux
+ldapsearch -H ldap://dc.corp.local -b "DC=corp,DC=local" "(objectClass=user)"
+```
+
+## Relazione con Kerberos
+Kerberos e LDAP sono due cose separate che lavorano insieme in AD. **Kerberos** gestisce l'**autenticazione** — chi sei. **LDAP** gestisce l'**accesso alle informazioni** — cosa puoi leggere o modificare in AD. Quando fai Get-DomainUser da una macchina joinata, Windows usa Kerberos per autenticarti al DC, poi usa LDAP per fare la query effettiva.
+
