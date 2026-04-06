@@ -17,7 +17,7 @@
           - [Può succedere che:](#può-succedere-che)
         - [Opzione 4 – Dumping credenziali (il vero valore di AdminTo)](#opzione-4--dumping-credenziali-il-vero-valore-di-adminto)
     - [AddMember](#addmember)
-    - [Differenza con AddSelf](#differenza-con-addself)
+      - [Differenza con AddSelf](#differenza-con-addself)
 - [SharpHound - Data Collection da Windows](#sharphound---data-collection-da-windows)
   - [Metodi di Collection](#metodi-di-collection)
     - [Cosa usare?](#cosa-usare)
@@ -239,7 +239,7 @@ Add-DomainGroupMember -Identity 'ITManagers' -Members 'martha' -Credential $Cred
 Get-DomainGroupMember -Identity 'ITManagers' -Credential $Cred
 ```
 
-### Differenza con AddSelf
+#### Differenza con AddSelf
 ![alt text](images/bloodhound/AddMemberVSAddSelf.png)
 
 `AddMembers` è più potente perché puoi aggiungere anche altri utenti, non solo te stesso.
