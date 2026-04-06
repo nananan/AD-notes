@@ -1,3 +1,25 @@
+- [AD Basi](#ad-basi)
+  - [Account Computer vs Account Utente](#account-computer-vs-account-utente)
+  - [Local Account vs Domain Account](#local-account-vs-domain-account)
+    - [Verifica LAPS](#verifica-laps)
+  - [Local Account non Admin](#local-account-non-admin)
+  - [Computer](#computer)
+    - [Workgroup](#workgroup)
+- [Kerberos](#kerberos)
+  - [Fase 1 — AS-REQ / AS-REP (client → KDC)](#fase-1--as-req--as-rep-client--kdc)
+  - [Fase 2 — TGS-REQ / TGS-REP (client → KDC, rimanda il TGT)](#fase-2--tgs-req--tgs-rep-client--kdc-rimanda-il-tgt)
+    - [Il TGS è firmato con la chiave del Service Owner - Chi è il service owner](#il-tgs-è-firmato-con-la-chiave-del-service-owner---chi-è-il-service-owner)
+      - [Perché il Client (Mario) rimanda il TGT e non la password?](#perché-il-client-mario-rimanda-il-tgt-e-non-la-password)
+      - [Quando il DC riceve il TGT nella fase 2, "verificare che sia valido" significa fare questi controlli:](#quando-il-dc-riceve-il-tgt-nella-fase-2-verificare-che-sia-valido-significa-fare-questi-controlli)
+  - [Fase 3 — AP-REQ (client → servizio)](#fase-3--ap-req-client--servizio)
+    - [Cosa trova dentro il TGS decifrato](#cosa-trova-dentro-il-tgs-decifrato)
+    - [I controlli che fa il servizio](#i-controlli-che-fa-il-servizio)
+      - [Il punto critico](#il-punto-critico)
+  - [Il DC non memorizza chiavi di sessioni!](#il-dc-non-memorizza-chiavi-di-sessioni)
+    - [Il DC è stateless](#il-dc-è-stateless)
+- [NetNTML](#netntml)
+
+
 # AD Basi
 
 Link Usati:
@@ -62,13 +84,14 @@ systeminfo | findstr /i "domain"
 # Kerberos
 ![alt text](images/AD/kerberos.png)
 
-#### Fase 1 — AS-REQ / AS-REP (client → KDC)
+
+## Fase 1 — AS-REQ / AS-REP (client → KDC)
 Mario manda la richiesta con il timestamp cifrato. Il KDC verifica chi è Mario e gli rilascia il TGT. Questo TGT è la prova che Mario si è autenticato correttamente — è cifrato con la chiave di krbtgt, quindi Mario non può leggerlo né modificarlo, può solo trasportarlo.
 
-#### Fase 2 — TGS-REQ / TGS-REP (client → KDC, rimanda il TGT)
+## Fase 2 — TGS-REQ / TGS-REP (client → KDC, rimanda il TGT)
 Mario vuole accedere al file server. Rimanda il TGT al DC dicendo "ho già provato di essere Mario, ora ho bisogno di un ticket specifico per cifs/fileserver". Il DC decifra il TGT con la chiave di krbtgt, verifica che sia valido, e rilascia un TGS (Ticket Granting Service) — un ticket specifico per quel servizio, cifrato con la chiave del file server.
 
-#### Il TGS è firmato con la chiave del Service Owner - Chi è il service owner
+### Il TGS è firmato con la chiave del Service Owner - Chi è il service owner
 - Quando un servizio viene avviato su una macchina Windows, gira nel contesto di sicurezza di un account specifico. Quell'account è il service owner.
 
 > Esempi concreti:
@@ -80,11 +103,11 @@ Mario vuole accedere al file server. Rimanda il TGT al DC dicendo "ho già prova
 Quando chiedi un TGS per un servizio, il DC te lo rilascia senza verificare se hai effettivamente accesso a quel servizio — ti dà semplicemente il ticket cifrato. Quel ticket è cifrato con l'hash del service owner.
 - Se il service owner è un account utente di dominio (non un account computer), il suo hash è derivato da una password scelta da un umano — quindi potenzialmente debole e craccabile offline.
 
-##### Perché il Client (Mario) rimanda il TGT e non la password?
+#### Perché il Client (Mario) rimanda il TGT e non la password?
 - Il punto chiave è che Mario rimanda il TGT invece della password perché il TGT è una prova di identità già validata — il DC non deve riautenticare Mario da zero ogni volta. È come avere un badge giornaliero: lo mostri all'ingresso una volta sola al mattino, poi lo usi per aprire tutte le porte interne senza tornare ogni volta alla reception.
 - La password non viaggia mai sulla rete dopo la prima fase — questo è uno dei vantaggi fondamentali di Kerberos rispetto a NTLM.
 
-##### Quando il DC riceve il TGT nella fase 2, "verificare che sia valido" significa fare questi controlli:
+#### Quando il DC riceve il TGT nella fase 2, "verificare che sia valido" significa fare questi controlli:
 - Prima cosa: lo decifra con l'hash di krbtgt. Se la decifratura produce dati sensati, significa che il TGT è stato creato da lui stesso — nessun altro conosce quella chiave, quindi non può essere stato falsificato.
 - Dentro il TGT decifrato trova:
     - l'identità dell'utente (Mario)
@@ -98,12 +121,12 @@ Quando chiedi un TGS per un servizio, il DC te lo rilascia senza verificare se h
 
 > L'ultimo punto è interessante — ed è anche una debolezza di Kerberos. Il DC non consulta un database di "TGT revocati". Se Mario viene licenziato e il suo account viene disabilitato, i TGT già emessi rimangono validi fino alla loro scadenza naturale. Per questo il Golden Ticket è così persistente — anche se cambi la password dell'utente, il ticket forgiato continua a funzionare finché non cambi krbtgt.
 
-#### Fase 3 — AP-REQ (client → servizio)
+## Fase 3 — AP-REQ (client → servizio)
 Mario presenta il TGS direttamente al file server. Il file server lo decifra con la propria chiave, verifica che sia valido, e concede l'accesso. Il DC non è più coinvolto.
 
 Il servizio decifra il TGS con la propria chiave, se la decifratura produce dati sensati, il ticket è autentico. Nessuna chiamata al DC, nessuna verifica centrale.
 
-##### Cosa trova dentro il TGS decifrato
+### Cosa trova dentro il TGS decifrato
 Il DC quando ha creato il TGS ci ha messo dentro:
 - l'identità dell'utente (Mario)
 - i SID di Mario e dei suoi gruppi
@@ -113,18 +136,18 @@ Il DC quando ha creato il TGS ci ha messo dentro:
 - il nome del servizio per cui è valido
 
 
-##### I controlli che fa il servizio
+### I controlli che fa il servizio
 - Primo: decifra il TGS con la propria chiave. Se riesce, sa che il ticket è stato creato dal DC — solo il DC conosce la sua chiave.
 - Secondo: verifica che il ticket non sia scaduto e che il timestamp non sia troppo vecchio (stesso controllo anti-replay che fa il DC).
 - Terzo: verifica che il ticket sia destinato a lui. Dentro il TGS c'è il nome del servizio — se Mario presenta un ticket per cifs/fileserver al server SQL, il server SQL lo rifiuta perché il nome non corrisponde.
 - Quarto: il client insieme al TGS manda anche un authenticator — un piccolo messaggio cifrato con la chiave di sessione che contiene il timestamp attuale. Il servizio lo decifra con la chiave di sessione trovata nel TGS e verifica che sia fresco. Questo è l'ultimo controllo anti-replay.
 
-###### Il punto critico
+#### Il punto critico
 - Il servizio decide l'accesso basandosi sui SID dentro il ticket — non chiama il DC per verificare i permessi in tempo reale. Questo è di nuovo la stessa debolezza di prima: se l'account di Mario viene disabilitato dopo che il TGS è stato emesso, il servizio non lo sa e continua ad accettare il ticket fino alla scadenza.
 - Ed è anche il motivo per cui il Silver Ticket funziona — se conosci la chiave del servizio puoi forgiare un TGS falso con i SID che vuoi, e il servizio lo accetta perché non ha modo di distinguerlo da uno legittimo emesso dal DC.
 
 
-### Il DC non memorizza chiavi di sessioni!
+## Il DC non memorizza chiavi di sessioni!
 Quando il DC emette un TGT, genera una chiave di sessione casuale e la mette in due posti:
 
 - dentro il TGT stesso (cifrato con krbtgt, quindi solo il DC può leggerlo)
@@ -134,7 +157,7 @@ Quando Mario rimanda il TGT nella fase 2, il DC lo decifra con krbtgt e ritrova 
 
 Lo stesso principio vale per il TGS — il DC genera una nuova chiave di sessione, la mette dentro il TGS cifrato con la chiave del service owner, e la manda anche al client. Quando il client presenta il TGS al file server, il file server decifra il TGS con la propria chiave e trova la chiave di sessione — senza mai parlare con il DC.
 
-#### Il DC è stateless
+### Il DC è stateless
 - Il DC è stateless, non deve tenere traccia di nessuna sessione attiva. Non importa quanti utenti siano autenticati in contemporanea, non c'è nessun database di sessioni da gestire o sincronizzare tra DC diversi.
 - Tutto lo stato necessario viaggia dentro i ticket stessi, cifrato in modo che solo il destinatario corretto possa leggerlo.
 
