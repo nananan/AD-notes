@@ -60,7 +60,7 @@ systeminfo | findstr /i "domain"
 
 
 # Kerberos
-![alt text](images/image.png)
+![alt text](images/AD/kerberos.png)
 
 #### Fase 1 — AS-REQ / AS-REP (client → KDC)
 Mario manda la richiesta con il timestamp cifrato. Il KDC verifica chi è Mario e gli rilascia il TGT. Questo TGT è la prova che Mario si è autenticato correttamente — è cifrato con la chiave di krbtgt, quindi Mario non può leggerlo né modificarlo, può solo trasportarlo.
@@ -72,7 +72,7 @@ Mario vuole accedere al file server. Rimanda il TGT al DC dicendo "ho già prova
 - Quando un servizio viene avviato su una macchina Windows, gira nel contesto di sicurezza di un account specifico. Quell'account è il service owner.
 
 > Esempi concreti:
-> - il file server gira tipicamente come NT AUTHORITY\SYSTEM — che in AD corrisponde all'account computer della macchina, tipo FILESERVER$. Quindi il TGS per cifs/fileserver è cifrato con l'hash di FILESERVER$.
+> - il file server gira tipicamente come NT AUTHORITY\SYSTEM — che in AD corrisponde all'account computer della macchina, tipo FILESERVER\$. Quindi il TGS per cifs/fileserver è cifrato con l'hash di FILESERVER\$.
 > - un servizio SQL custom invece può girare come un utente di dominio dedicato, tipo svc-sql@corp.local. Il TGS per MSSQLSvc/sqlserver è cifrato con l'hash di svc-sql.
 > - un servizio IIS può girare come svc-web@corp.local. Il TGS per http/webserver è cifrato con l'hash di svc-web.
 
@@ -100,3 +100,43 @@ Quando chiedi un TGS per un servizio, il DC te lo rilascia senza verificare se h
 
 #### Fase 3 — AP-REQ (client → servizio)
 Mario presenta il TGS direttamente al file server. Il file server lo decifra con la propria chiave, verifica che sia valido, e concede l'accesso. Il DC non è più coinvolto.
+
+Il servizio decifra il TGS con la propria chiave, se la decifratura produce dati sensati, il ticket è autentico. Nessuna chiamata al DC, nessuna verifica centrale.
+
+##### Cosa trova dentro il TGS decifrato
+Il DC quando ha creato il TGS ci ha messo dentro:
+- l'identità dell'utente (Mario)
+- i SID di Mario e dei suoi gruppi
+- la chiave di sessione
+- il timestamp di emissione
+- la scadenza del ticket
+- il nome del servizio per cui è valido
+
+
+##### I controlli che fa il servizio
+- Primo: decifra il TGS con la propria chiave. Se riesce, sa che il ticket è stato creato dal DC — solo il DC conosce la sua chiave.
+- Secondo: verifica che il ticket non sia scaduto e che il timestamp non sia troppo vecchio (stesso controllo anti-replay che fa il DC).
+- Terzo: verifica che il ticket sia destinato a lui. Dentro il TGS c'è il nome del servizio — se Mario presenta un ticket per cifs/fileserver al server SQL, il server SQL lo rifiuta perché il nome non corrisponde.
+- Quarto: il client insieme al TGS manda anche un authenticator — un piccolo messaggio cifrato con la chiave di sessione che contiene il timestamp attuale. Il servizio lo decifra con la chiave di sessione trovata nel TGS e verifica che sia fresco. Questo è l'ultimo controllo anti-replay.
+
+###### Il punto critico
+- Il servizio decide l'accesso basandosi sui SID dentro il ticket — non chiama il DC per verificare i permessi in tempo reale. Questo è di nuovo la stessa debolezza di prima: se l'account di Mario viene disabilitato dopo che il TGS è stato emesso, il servizio non lo sa e continua ad accettare il ticket fino alla scadenza.
+- Ed è anche il motivo per cui il Silver Ticket funziona — se conosci la chiave del servizio puoi forgiare un TGS falso con i SID che vuoi, e il servizio lo accetta perché non ha modo di distinguerlo da uno legittimo emesso dal DC.
+
+
+### Il DC non memorizza chiavi di sessioni!
+Quando il DC emette un TGT, genera una chiave di sessione casuale e la mette in due posti:
+
+- dentro il TGT stesso (cifrato con krbtgt, quindi solo il DC può leggerlo)
+- nella risposta AS-REP al client (cifrata con la chiave dell'utente)
+
+Quando Mario rimanda il TGT nella fase 2, il DC lo decifra con krbtgt e ritrova la chiave di sessione che aveva messo lì dentro — senza doverla cercare da nessuna parte. Il TGT è essenzialmente un "promemoria cifrato" che il DC manda a se stesso tramite il client.
+
+Lo stesso principio vale per il TGS — il DC genera una nuova chiave di sessione, la mette dentro il TGS cifrato con la chiave del service owner, e la manda anche al client. Quando il client presenta il TGS al file server, il file server decifra il TGS con la propria chiave e trova la chiave di sessione — senza mai parlare con il DC.
+
+#### Il DC è stateless
+- Il DC è stateless, non deve tenere traccia di nessuna sessione attiva. Non importa quanti utenti siano autenticati in contemporanea, non c'è nessun database di sessioni da gestire o sincronizzare tra DC diversi.
+- Tutto lo stato necessario viaggia dentro i ticket stessi, cifrato in modo che solo il destinatario corretto possa leggerlo.
+
+# NetNTML
+![alt text](images/AD/netNTLM.png)

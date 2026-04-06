@@ -80,10 +80,10 @@ Chi è loggato interattivamente in quel momento su quella macchina. Questo perme
 
 >"L'utente Domain Admin è loggato sulla macchina WORKSTATION-42" → potenziale target per credential dumping.
 
-![alt text](images/bloodhound/sharphound_privilege.png)
+![alt text](images/sharphound/sharphound_privilege.png)
 > Senza privilegi di Local Administrator sulla macchina target, le chiamate API remote (come NetLocalGroupGetMembers e NetSessionEnum) vengono rifiutate o ritornano dati vuoti.
 
-![alt text](images/bloodhound/sharphound_contestoEsecuzione.png)
+![alt text](images/sharphound/sharphound_contestoEsecuzione.png)
 
 Una volta eseguito, ShapHound crea dei file zip che possono essere messi su BloodHound.
 
@@ -92,24 +92,24 @@ Una volta eseguito, ShapHound crea dei file zip che possono essere messi su Bloo
 
 - **All**: Fa tutto, tranne GPOLocalGroup. Massima raccolta, massimo rumore. Da usare solo in ambienti dove non c'è monitoring o in lab.
 - **DCOnly**: Parla solo con il Domain Controller:
-![alt text](images/bloodhound/DCOnly.png)
+![alt text](images/sharphound/DCOnly.png)
 Raccoglie: utenti, computer, gruppi, trust, ACL, OU, GPO. Tenta anche di correlare le GPO ai computer che ne sono affetti, per inferire i local group senza connettersi alle macchine.
 - **ComputerOnly**: L'opposto: parla solo con le singole macchine, non interroga l'AD. Raccoglie: sessioni attive + membri dei gruppi locali.
 
 ### Cosa usare?
 Se si considera un ambiente:
-![alt text](images/bloodhound/ambiente_SOC_shaphound.png)
+![alt text](images/sharphound/ambiente_SOC_shaphound.png)
 
 Alcune strategie per non farsi sgamare:
-![alt text](images/bloodhound/strategie_Sharphound.png)
+![alt text](images/sharphound/strategie_Sharphound.png)
 
 ### Riassunto Metodi di Collection
-![alt text](images/bloodhound/riassunto_metodi_sharphound.png)
+![alt text](images/sharphound/riassunto_metodi_sharphound.png)
 
 > Il traffico verso il Domain Controller è fisiologico in un dominio Windows — centinaia di macchine lo contattano continuamente. Il traffico da una singola macchina verso tutte le altre è invece anomalo e facilmente rilevabile.
 
 ## Flag comuni di SharpHound
-![alt text](images/bloodhound/flagSharpHound.png)
+![alt text](images/sharphound/flagSharpHound.png)
 ### --ldapusername / --ldappassword
 
 Servono quando hai credenziali diverse dall'utente con cui sei loggato.
@@ -198,12 +198,12 @@ SharpHound.exe \
 
 ## Randomizzare e nascondere l'output di SharpHound
 Il comportamento default di SharpHound è riconoscibile dai difensori:
-![alt text](images/bloodhound/output_sharphound.png)
+![alt text](images/sharphound/output_sharphound.png)
 
 > Un SOC o un AV può creare regole di detection basate su questi pattern di file.
 
 ### Le opzioni di evasione
-![alt text](images/bloodhound/opzioni_evasione_sharphound.png)
+![alt text](images/sharphound/opzioni_evasione_sharphound.png)
 
 ### Una possibile tecnica di evasione
 **Non scrivere mai nulla sul disco della macchina vittima.**
@@ -256,7 +256,7 @@ Tutti i file hanno:
 BloodHound è comunque in grado di importarli correttamente, riconosce il contenuto indipendentemente dal nome o estensione.
 
 #### Cosa si evade con questa tecnica
-![alt text](images/bloodhound/tecnica_evasion_sharphound.png)
+![alt text](images/sharphound/tecnica_evasion_sharphound.png)
 
 >Lo zip protetto da password va prima decompresso e poi importato in BloodHound. Senza password invece puoi importare il file direttamente, anche con nome e estensione casuali.
 
@@ -265,7 +265,7 @@ BloodHound è comunque in grado di importarli correttamente, riconosce il conten
 ### Il problema: le sessioni sono effimere
 **Una sessione esiste solo mentre l'utente è connesso. Appena si disconnette, sparisce in pochi minuti.**
 
-![alt text](images/bloodhound/sessions.png)
+![alt text](images/sharphound/sessions.png)
 
 Quindi se SharpHound fa una sola raccolta e in quel momento non c'è nessuno connesso:
 ```
@@ -277,14 +277,14 @@ net session
 ### Perché le sessioni sono importanti?
 In un attacco AD, sapere **dove è loggato un utente privilegiato** è fondamentale:
 
-![alt text](images/bloodhound/bloodhound_session_priviledge.png)
+![alt text](images/sharphound/bloodhound_session_priviledge.png)
 
 Senza dati di sessione, questo path di attacco è invisibile nel grafo.
 
 ### La soluzione: --loop
 Invece di fare una sola raccolta, SharpHound continua a interrogare i computer a intervalli regolari, catturando le sessioni man mano che appaiono.
 
-![alt text](images/bloodhound/loop_flag_sharphound.png)
+![alt text](images/sharphound/loop_flag_sharphound.png)
 
 #### Esempio
 ```
@@ -309,7 +309,7 @@ Timeline di esecuzione
 ### --stealth: ridurre il rumore
 Interrogare tutti i computer ogni minuto per un'ora genera molto traffico. Il flag `--stealth` ottimizza questo:
 
-![alt text](images/bloodhound/stealth_flag_sharphound.png)
+![alt text](images/sharphound/stealth_flag_sharphound.png)
 
 Utile in ambienti monitorati dove vuoi comunque raccogliere sessioni ma con meno rumore.
 
@@ -343,7 +343,7 @@ SharpHound.exe -c Session \
   --outputdirectory \\10.10.14.33\share\
 ```
 
-![alt text](images/bloodhound/stealth_flag_computer_sharphound.png)
+![alt text](images/sharphound/stealth_flag_computer_sharphound.png)
 
 > Microsoft ha introdotto il requisito di essere **Local Administrator** per raccogliere dati di sessione. Quindi `--loop` è efficace solo sui computer dove hai già privilegi amministrativi.
 
@@ -356,7 +356,7 @@ Normalmente SharpHound gira su una macchina già membro del dominio, quindi ered
 
 ### La soluzione: runas /netonly
 
-![alt text](images/bloodhound/riassunto_non_join_sharphound.png)
+![alt text](images/sharphound/riassunto_non_join_sharphound.png)
 
 
 ```
@@ -365,7 +365,7 @@ runas /netonly /user:INLANEFREIGHT\htb-student cmd.exe
 
 Cosa fa `/netonly`?
 
-![alt text](images/bloodhound/netonly.png)
+![alt text](images/sharphound/netonly.png)
 
 Quindi tutto il traffico di rete (LDAP, SMB, ecc.) viene autenticato come htb-student nel dominio, anche se la macchina non è jointa.
 
@@ -379,7 +379,7 @@ Puntare la scheda di rete al DNS server del dominio (solitamente il DC):
 
 DNS Server: 172.16.130.3  (IP del Domain Controller)
 
-![alt text](images/bloodhound/dns_DC.png)
+![alt text](images/sharphound/dns_DC.png)
 
 ##### Opzione 2 – File hosts (fallback)
 Aggiungere manualmente i record al file C:\Windows\System32\drivers\etc\hosts:
@@ -494,7 +494,7 @@ $ sudo python3 setup.py install
 ## Autenticazione supportata
 BloodHound.py è flessibile sul metodo di autenticazione:
 
-![alt text](images/bloodhound/bloodhound_linux_auth.png)
+![alt text](images/sharphound/bloodhound_linux_auth.png)
 
 > Di default tenta Kerberos prima, e se fallisce fa fallback a NTLM automaticamente.
 
@@ -545,10 +545,10 @@ Perché NTLM è più rumoroso?
 
 > Kerberos è il metodo di autenticazione nativo di Windows AD. Usarlo fa sembrare il tuo traffico normale, come quello di qualsiasi macchina del dominio. NTLM è più vecchio e alcune organizzazioni lo monitorano o addirittura lo bloccano.
 
-![alt text](images/bloodhound/kerberos_vs_NTLM.png)
+![alt text](images/sharphound/kerberos_vs_NTLM.png)
 
 
-![alt text](images/bloodhound/riassunto_bloodhound_python_DNS_kerberos.png)
+![alt text](images/sharphound/riassunto_bloodhound_python_DNS_kerberos.png)
 
 #### Requisito extra per Kerberos: sincronizzazione orario
 

