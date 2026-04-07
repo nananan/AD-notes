@@ -23,6 +23,31 @@
       - [Come abusarlo?](#come-abusarlo)
         - [Perché è così potente?](#perché-è-così-potente)
         - [Constrained vs Unconstrained Delegation](#constrained-vs-unconstrained-delegation)
+- [Analizzare i dati in BloodHound](#analizzare-i-dati-in-bloodhound)
+  - [Approccio top-down](#approccio-top-down)
+    - [Step 1 – Panoramica del dominio](#step-1--panoramica-del-dominio)
+    - [Step 2 – Analizza Domain Users](#step-2--analizza-domain-users)
+    - [Step 3 – Path da Domain Users a Domain Admins](#step-3--path-da-domain-users-a-domain-admins)
+    - [Step 4 – Chi sono i Domain Admins?](#step-4--chi-sono-i-domain-admins)
+    - [Step 5 – Shortest Paths to Domain Admins](#step-5--shortest-paths-to-domain-admins)
+    - [Finding Sessions](#finding-sessions)
+    - [Owned Principals — La funzione più utile per il Red Team](#owned-principals--la-funzione-più-utile-per-il-red-team)
+    - [Pre-built Queries più utili](#pre-built-queries-più-utili)
+- [Cypher Queries](#cypher-queries)
+  - [Cos'è Cypher?](#cosè-cypher)
+  - [Attributi Cypher](#attributi-cypher)
+  - [Keywords Principali](#keywords-principali)
+  - [Query](#query)
+    - [Neo4j Query vs BloodHound Query](#neo4j-query-vs-bloodhound-query)
+    - [Cypher query per restituire tutti gli utenti](#cypher-query-per-restituire-tutti-gli-utenti)
+    - [Cypher query per restituire l'utente peter](#cypher-query-per-restituire-lutente-peter)
+    - [Cypher query per restituire i gruppi a cui fa parte peter](#cypher-query-per-restituire-i-gruppi-a-cui-fa-parte-peter)
+      - [Si possono anche restituire tutte le variabili n,r,g](#si-possono-anche-restituire-tutte-le-variabili-nrg)
+      - [In BloodHound si deve creare una variabile "p"!](#in-bloodhound-si-deve-creare-una-variabile-p)
+  - [Altre Query perchè siamo hackerinə :D](#altre-query-perchè-siamo-hackerinə-d)
+    - [Restituire la relazioni "MemberOf" di Peter](#restituire-la-relazioni-memberof-di-peter)
+    - [Trovare un path dove il nome del primo gruppo contiene "ITSECURITY"](#trovare-un-path-dove-il-nome-del-primo-gruppo-contiene-itsecurity)
+      - [Si può usare anche =~](#si-può-usare-anche-)
 
 
 BloodHound usa Graph Theory.
@@ -258,4 +283,179 @@ Da Windows con Rubeus:
 ##### Constrained vs Unconstrained Delegation
 ![alt text](images/bloodhound/ConstrainedvsUnconstrainedDelegation.png)
 
+
+
+
+
+//TODO altri attacchi... 
+
+
+
+# Analizzare i dati in BloodHound
+
+## Approccio top-down
+Un metodo sistematico per analizzare un dominio, partendo dall'alto e scendendo nel dettaglio.
+- L'analisi BloodHound non è una singola query ma un processo iterativo: parti dal dominio, scendi ai gruppi privilegiati, trovi i path, marchi i nodi compromessi e cerchi nuovi path. Ogni nodo compromesso apre nuove possibilità.
+  
+### Step 1 – Panoramica del dominio
+```
+Search bar: domain:INLANEFREIGHT.HTB
+```
+Ti dà subito una fotografia generale:
+```
+Functional Level : 2016
+Users            : 34
+Groups           : 60
+Computers        : 7
+OUs              : 6
+GPOs             : 5
+```
+
+Il functional level 2016 suggerisce che probabilmente non ci sono server legacy, ma non è una certezza!
+
+
+### Step 2 – Analizza Domain Users
+- Cerchi Domain Users e guardi Outbound Object Control → Transitive Object Control.
+- Questo è fondamentale perché ogni utente del dominio eredita i diritti di Domain Users. Anche una piccola misconfiguration su questo gruppo si propaga a tutti gli utenti.
+- Per esempio, Domain Users potrebbe avere controllo transitivo su oggetti come SRV01, EVERYONE, AUTHENTICATED USERS — il che significa che qualsiasi utente del dominio ha quei privilegi.
+
+### Step 3 – Path da Domain Users a Domain Admins
+Pathfinding:
+```
+Start : DOMAIN USERS@INLANEFREIGHT.HTB
+End   : DOMAIN ADMINS@INLANEFREIGHT.HTB
+```
+Se non restituisce nulla → non esiste un path diretto per tutti gli utenti :(. Buona notizia per i difensori, ma si va avanti con analisi più specifiche.
+
+### Step 4 – Chi sono i Domain Admins?
+Cerchi Domain Admins e guardi i membri:
+```
+Domain Admins
+├── DAVID        (diretto)
+├── JULIO        (diretto)
+├── ADMINISTRATOR (diretto)
+└── ITSECURITY   (gruppo)
+      └── PETER  (membro del gruppo → DA per nested membership)
+```
+Peter è Domain Admin indirettamente tramite nested group — facile da non notare senza BloodHound!
+
+
+### Step 5 – Shortest Paths to Domain Admins
+Questa query pre-built (la si trova già in BloodHound) è una delle più importanti.
+- Tutti path che portano a Domain Admin senza essere DA direttamente.
+
+### Finding Sessions
+Le sessioni sono visibili nel Node Info dei nodi. Per esempio:
+```
+Domain Admins → 1 sessione
+  └── JULIO è connesso a DC01
+```
+Questo significa: se comprometti DC01 in quel momento, puoi rubare le credenziali di JULIO che è Domain Admin.
+
+### Owned Principals — La funzione più utile per il Red Team
+Il workflow è:
+1. Comprometti un utente/computer
+2. Tasto destro → "Mark as Owned" (appare icona del teschio)
+3. Analysis → "Shortest Path from Owned Principals"
+4. BloodHound ti mostra dove puoi arrivare da lì
+
+### Pre-built Queries più utili
+![alt text](images/bloodhound/prebuilt_queries.png)
+
+
+# Cypher Queries
+## Cos'è Cypher?
+È il linguaggio di query di Neo4j, il database a grafo usato da BloodHound. Simile a SQL ma ottimizzato per lavorare con nodi e relazioni invece che con tabelle.
+
+## Attributi Cypher
+![alt text](images/bloodhound/attributi_cypher.png)
+> Adoro quest'immagine fatta dal team di HTB!
+
+![alt text](images/bloodhound/attributi_cypher_desrizione.png)
+
+## Keywords Principali
+![alt text](images/bloodhound/keywords.png)
+
+
+## Query
+
+### Neo4j Query vs BloodHound Query
+![alt text](images/bloodhound/query_differenza.png)
+
+### Cypher query per restituire tutti gli utenti
+```
+MATCH (u:User) RETURN u
+```
+
+### Cypher query per restituire l'utente peter
+```
+MATCH (u:User {name:"PETER@INLANEFREIGHT.HTB"}) RETURN u
+```
+La query usa `MATCH` per trovare l'utente con la proprietà `name` uguale a `PETER@INLANEFREIGHT.HTB` e lo restituisce.
+
+Oppure si può trovare la stessa cosa, facendo:
+```
+MATCH (u:User) WHERE u.name = "PETER@INLANEFREIGHT.HTB" RETURN u
+```
+
+### Cypher query per restituire i gruppi a cui fa parte peter
+```
+MATCH (u:User {name:"PETER@INLANEFREIGHT.HTB"})-[r:MemberOf]->(peterGroups) 
+RETURN peterGroups
+```
+La query usa `MATCH` per trovare l'utente con la proprietà `name` uguale a `PETER@INLANEFREIGHT.HTB` con relazione `MemberOf` e li salva nella variabile di nome `peterGroups` e la restituisce.
+
+
+#### Si possono anche restituire tutte le variabili n,r,g
+```
+MATCH (n:User {name:"PETER@INLANEFREIGHT.HTB"})-[r:MemberOf]->(g:Group) 
+RETURN n,r,g
+```
+Come prima, ma invece di reare una nuova variabile, si restituiscono tutte le variabili "primitive".
+- In Neo4j, se si preme poi "Graph" si può vedere anche il grafo del risultato!
+
+#### In BloodHound si deve creare una variabile "p"!
+```
+MATCH p=((n:User {name:"PETER@INLANEFREIGHT.HTB"})-[r:MemberOf]->(g:Group)) 
+RETURN p
+```
+
+## Altre Query perchè siamo hackerinə :D
+### Restituire la relazioni "MemberOf" di Peter
+```
+MATCH p=((u:User {name:"PETER@INLANEFREIGHT.HTB"})-[r:MemberOf*1..]->(g:Group)) 
+RETURN p
+```
+![alt text](images/bloodhound/query_memberof_peter.png)
+
+- Si assignano 2 variabili, `u` e `g` a `User` e `Group` e si dice a BloodHound di trovare nodi che matchano la relazione `MemberOf`.
+- `*1..`:  significa minimo 1 hop, massimo infinito. Quindi trova anche i gruppi dei gruppi dei gruppi...
+  - È possibile usare un numero al posto di `*` per limitare la profondità. Ad esempio, `*1..2` indica che il percorso deve avere una profondità minima di `1` e massima di `2`, quindi attraversare una o due relazioni `MemberOf`. Tipo `MATCH p=(n:User)-[r1:MemberOf*1..2]->(g:Group)`
+- Il risultato è assegnato alla variabile `p` e viene restituito.
+
+### Trovare un path dove il nome del primo gruppo contiene "ITSECURITY"
+```
+MATCH p=(n:User)-[r1:MemberOf*1..]->(g:Group)
+WHERE nodes(p)[1].name CONTAINS 'ITSECURITY'
+RETURN p
+```
+
+- La parte nodes(p)[1].name si riferisce alla proprietà `name` del primo nodo nel percorso `p`, ottenuto dalla variabile `nodes(p)`.
+
+- La parola chiave `CONTAINS` restituisce solo il percorso in cui il nome del primo gruppo contiene la sottostringa `ITSECURITY`.
+
+
+#### Si può usare anche =~
+Si può usare `=~` per matchare una espressione regolare:
+```
+MATCH p=(n:User)-[r1:MemberOf*1..]->(g:Group)
+WHERE nodes(p)[1].name =~ '(?i)itsecurity.*'
+RETURN p
+```
+
+- `(?i)` = case insensitive
+- `.*` = qualsiasi carattere
+
+
+![alt text](images/bloodhound/contains_query.png)
 
