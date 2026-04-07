@@ -48,6 +48,19 @@
     - [Restituire la relazioni "MemberOf" di Peter](#restituire-la-relazioni-memberof-di-peter)
     - [Trovare un path dove il nome del primo gruppo contiene "ITSECURITY"](#trovare-un-path-dove-il-nome-del-primo-gruppo-contiene-itsecurity)
       - [Si può usare anche =~](#si-può-usare-anche-)
+  - [Analisi di Query di BloodHound](#analisi-di-query-di-bloodhound)
+    - [Paths più corti verso domain admins](#paths-più-corti-verso-domain-admins)
+  - [ShortestPath da qualsiasi nodo](#shortestpath-da-qualsiasi-nodo)
+    - [ACL con PowerView](#acl-con-powerview)
+  - [Query Custom](#query-custom)
+    - [Cheat sheet utili](#cheat-sheet-utili)
+    - [Diritti che Domain Users non dovrebbe avere sui computer](#diritti-che-domain-users-non-dovrebbe-avere-sui-computer)
+    - [Utenti con description non vuota (possibili password in chiaro!)](#utenti-con-description-non-vuota-possibili-password-in-chiaro)
+    - [Tutti i local admin e le loro macchine](#tutti-i-local-admin-e-le-loro-macchine)
+    - [Trova un edge specifico](#trova-un-edge-specifico)
+    - [Salvare Custom Queries](#salvare-custom-queries)
+      - [Esempio query statica](#esempio-query-statica)
+      - [Esempio query interattiva (con selezione da nodo owned)](#esempio-query-interattiva-con-selezione-da-nodo-owned)
 
 
 BloodHound usa Graph Theory.
@@ -459,3 +472,132 @@ RETURN p
 
 ![alt text](images/bloodhound/contains_query.png)
 
+
+## Analisi di Query di BloodHound
+### Paths più corti verso domain admins
+```
+MATCH p=shortestPath((n)-[*1..]->(m:Group {name:"DOMAIN ADMINS@INLANEFREIGHT.HTB"})) 
+WHERE NOT n=m 
+RETURN p
+```
+- `shortestPath`: funzione di Cypher usata per trovare il percorso più breve tra due nodi in un grafo. Usata nella clausola `MATCH` per trovare il percorso più breve tra un nodo di partenza `n` e un nodo di arrivo `m` che soddisfano determinate condizioni.
+- La condizione `WHERE NOT n = m`: per escludere la possibilità che il nodo di partenza e quello di arrivo siano lo stesso nodo. Un nodo non può avere un percorso verso sé stesso!
+
+## ShortestPath da qualsiasi nodo
+
+```
+MATCH p = shortestPath((n)-[*1..]->(c)) 
+WHERE n.name =~ '(?i)peter.*' AND NOT c=n 
+RETURN p
+```
+- In questo caso lo cerca dal nodo che contiene "peter" ad ogni nodo 
+- Sostituisci "peter" con qualsiasi utente compromesso
+- Questa è la query più potente: trova qualsiasi path da un nodo verso qualsiasi altro nodo. Usa allshortestpaths invece di shortestPath per vedere tutti i path possibili.
+
+### ACL con PowerView
+Se questo script non restituisce nulla, si puà usare PowerView o SharpView per vedere i privilegi dell'utente verso un altro oggetto in AD.
+```
+PS C:\htb> Import-Module c:\tools\PowerView.ps1
+PS C:\htb> Get-DomainObjectAcl -Identity peter -domain INLANEFREIGHT.HTB -ResolveGUIDs
+...SNIP...
+```
+
+
+## Query Custom
+In BloodHound si possono anche creare delle query diverse da quelle che già ci sono e si possono anche importare.
+- Alcune custom query però si possono eseguire solo nella console di Neo4j (e non da BloodHound)
+
+### Cheat sheet utili
+- https://gist.github.com/jeffmcjunkin/7b4a67bb7dd0cfbfbd83768f3aa6eb12
+- https://hausec.com/2019/09/09/bloodhound-cypher-cheatsheet/
+
+### Diritti che Domain Users non dovrebbe avere sui computer
+```
+MATCH p=(g:Group)-[r:Owns|WriteDacl|GenericAll|WriteOwner|ExecuteDCOM|GenericWrite|AllowedToDelegate|ForceChangePassword]->(c:Computer)
+WHERE g.name STARTS WITH "DOMAIN USERS"
+RETURN p
+```
+
+### Utenti con description non vuota (possibili password in chiaro!)
+```
+-- Solo su Neo4j console (localhost:7474)
+MATCH (u:User)
+WHERE u.description IS NOT NULL
+RETURN u.name, u.description
+```
+- Si può usare questa query per trovare tutti i local administrators and gli host in cui sono admin
+- Questa query può aiutare a mostrare a un cliente la portata dei privilegi di amministratore locale nella sua rete.
+
+### Tutti i local admin e le loro macchine
+```
+-- Solo su Neo4j console
+MATCH (c:Computer)
+OPTIONAL MATCH (u1:User)-[:AdminTo]->(c)
+OPTIONAL MATCH (u2:User)-[:MemberOf*1..]->(:Group)-[:AdminTo]->(c)
+WITH COLLECT(u1) + COLLECT(u2) AS TempVar,c
+UNWIND TempVar AS Admins
+RETURN c.name AS COMPUTER, COUNT(DISTINCT(Admins)) AS ADMIN_COUNT, COLLECT(DISTINCT(Admins.name)) AS USERS
+ORDER BY ADMIN_COUNT DESC
+```
+
+### Trova un edge specifico
+```
+-- Sostituisci WriteSPN con qualsiasi edge
+MATCH p=((n)-[r:WriteSPN]->(m)) RETURN p
+```
+
+### Salvare Custom Queries
+Le query custom si salvano in:
+- Windows: AppData\Roaming\bloodhound\customqueries.json
+- Linux: /root/.config/bloodhound/customqueries.json
+
+Possiamo aggiungere a questo file man mano che creiamo e testiamo le query.
+Cliccando sull’icona della matita accanto a `Custom Queries` nella scheda `Queries` di BloodHound, si aprirà questo file.
+- Man mano che aggiungiamo query personalizzate, l’elenco verrà popolato automaticamente.
+
+> Perà se BloodHound è aperto quando aggiorniamo il file `customqueries.json`, è necessario cliccare sull’icona di aggiornamento per ricaricarne il contenuto.
+
+#### Esempio query statica
+```
+{
+    "queries": [
+        {
+            "name": "From Peter to Anything",
+            "category": "Shortest Paths",
+            "queryList": [
+                {
+                    "final": true,
+                    "query": "MATCH p = allshortestPaths((n)-[*1..]->(c)) WHERE n.name =~ '(?i)peter.*' AND NOT c=n RETURN p",
+                    "allowCollapse": true
+                }
+            ]
+        }
+    ]
+}
+```
+
+#### Esempio query interattiva (con selezione da nodo owned)
+```
+{
+    "queries": [
+        {
+            "name": "Search From Owned to Anything",
+            "category": "Shortest Paths",
+            "queryList": [
+                {
+                    "final": false,
+                    "title": "Select the node to search...",
+                    "query": "MATCH (n {owned:true}) RETURN n.name"
+                },
+                {
+                    "final": true,
+                    "query": "MATCH p = allshortestPaths((n)-[*1..]->(c)) WHERE n.name = $result AND NOT c=n RETURN p",
+                    "allowCollapse": true
+                }
+            ]
+        }
+    ]
+}
+```
+
+Questa query in due step prima mostra tutti i nodi marcati come owned, ti fa scegliere, poi cerca tutti i path da quel nodo. Molto utile durante un pentest reale!
