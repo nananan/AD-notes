@@ -1,3 +1,32 @@
+- [AzureHound](#azurehound)
+  - [Nodi Azure](#nodi-azure)
+  - [Edge Azure](#edge-azure)
+    - [Gestione membri e ownership](#gestione-membri-e-ownership)
+    - [Ruoli privilegiati](#ruoli-privilegiati)
+    - [Esecuzione e accesso](#esecuzione-e-accesso)
+    - [Accesso a segreti](#accesso-a-segreti)
+    - [Altri](#altri)
+  - [Differenze rispetto ad Active Directory](#differenze-rispetto-ad-active-directory)
+  - [Cos'è AzureHound](#cosè-azurehound)
+    - [Metodi di autenticazione](#metodi-di-autenticazione)
+    - [Esecuzione base](#esecuzione-base)
+    - [Cosa raccoglie](#cosa-raccoglie)
+    - [Import in BloodHound](#import-in-bloodhound)
+    - [Analisi — differenza importante rispetto ad AD](#analisi--differenza-importante-rispetto-ad-ad)
+    - [Limite critico di Azure](#limite-critico-di-azure)
+- [Azure Attacks con PowerZure](#azure-attacks-con-powerzure)
+  - [Cos'è PowerZure](#cosè-powerzure)
+    - [Setup iniziale](#setup-iniziale)
+    - [Esempio di Attacco](#esempio-di-attacco)
+      - [Attacco 1 – Subscription Reader (più visibilità)](#attacco-1--subscription-reader-più-visibilità)
+      - [Attacco 2 – Leggere un Key Vault](#attacco-2--leggere-un-key-vault)
+        - [Cos'è un Key Vault](#cosè-un-key-vault)
+      - [Attacco 3 – Eseguire comandi su Azure VM](#attacco-3--eseguire-comandi-su-azure-vm)
+        - [Esecuzione comandi – metodo PowerZure (semplice)](#esecuzione-comandi--metodo-powerzure-semplice)
+        - [Esecuzione comandi – metodo Az module (più dettagliato)](#esecuzione-comandi--metodo-az-module-più-dettagliato)
+      - [Pattern comune di tutti gli attacchi](#pattern-comune-di-tutti-gli-attacchi)
+
+
 # AzureHound
 Lo stesso approccio usato per Active Directory si applica ad Azure, ma con nodi ed edge che iniziano con il prefisso AZ.
 

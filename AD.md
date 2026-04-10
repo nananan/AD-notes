@@ -37,6 +37,7 @@
   - [Le operazioni base](#le-operazioni-base)
   - [Come lo usi in pratica](#come-lo-usi-in-pratica)
   - [Relazione con Kerberos](#relazione-con-kerberos)
+- [lsass](#lsass)
 
 
 # AD Basi
@@ -336,3 +337,6 @@ ldapsearch -H ldap://dc.corp.local -b "DC=corp,DC=local" "(objectClass=user)"
 ## Relazione con Kerberos
 Kerberos e LDAP sono due cose separate che lavorano insieme in AD. **Kerberos** gestisce l'**autenticazione** — chi sei. **LDAP** gestisce l'**accesso alle informazioni** — cosa puoi leggere o modificare in AD. Quando fai Get-DomainUser da una macchina joinata, Windows usa Kerberos per autenticarti al DC, poi usa LDAP per fare la query effettiva.
 
+# lsass
+- lsass.exe (Local Security Authority Subsystem Service) è il processo Windows responsabile di gestire tutte le autenticazioni. Ogni volta che un utente si autentica su quella macchina, lsass riceve le credenziali, le verifica, e poi le tiene in memoria per tutta la durata della sessione — inclusi TGT e chiavi di sessione.
+- Quindi lsass è fondamentalmente un deposito di credenziali attive in memoria.
