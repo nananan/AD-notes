@@ -3,6 +3,16 @@
   - [Local Account vs Domain Account](#local-account-vs-domain-account)
     - [Verifica LAPS](#verifica-laps)
   - [Local Account non Admin](#local-account-non-admin)
+  - [Account speciali built-in di Windows](#account-speciali-built-in-di-windows)
+    - [LOCAL SYSTEM](#local-system)
+    - [NETWORK SERVICE](#network-service)
+    - [LOCAL SERVICE](#local-service)
+      - [La cosa importante](#la-cosa-importante)
+      - [Come vedi sotto quale account gira un servizio](#come-vedi-sotto-quale-account-gira-un-servizio)
+      - [Perché un admin sceglie un account dedicato invece di LOCAL SYSTEM](#perché-un-admin-sceglie-un-account-dedicato-invece-di-local-system)
+  - [Utenti Protetti](#utenti-protetti)
+    - [Cosa blocca concretamente](#cosa-blocca-concretamente)
+    - [Perché non viene usato ovunque](#perché-non-viene-usato-ovunque)
   - [Computer](#computer)
     - [Workgroup](#workgroup)
 - [Kerberos](#kerberos)
@@ -77,6 +87,69 @@ Un local account non-admin non ti dà accesso remoto ad altre macchine per due m
 
 > L'unica eccezione teorica sarebbe se quell'utente locale non-admin ha accesso a qualche share specifica sulla macchina target — ma è uno scenario molto raro e comunque limitato a quella risorsa, non ti dà una shell.
 
+## Account speciali built-in di Windows
+### LOCAL SYSTEM
+È l'account più privilegiato sulla macchina locale — ha controllo totale sul sistema. Quando un servizio gira come LOCAL SYSTEM ha accesso a tutto sul PC, può leggere il registry, modificare file di sistema, ecc. Sulla rete si presenta usando l'account computer della macchina (WEB-SRV$).
+
+### NETWORK SERVICE
+È un account con privilegi ridotti rispetto a LOCAL SYSTEM — può fare operazioni di rete ma ha accesso limitato alle risorse locali. Anche lui sulla rete si presenta come WEB-SRV$.
+
+### LOCAL SERVICE
+Simile a NETWORK SERVICE ma ancora più limitato — ha pochissimi privilegi locali e sulla rete si presenta come utente anonimo, senza credenziali.
+
+#### La cosa importante
+Sia **LOCAL SYSTEM** che **NETWORK SERVICE** quando parlano con la rete usano l'identità dell'account computer (WEB-SRV$ per esempio) della macchina. 
+```
+Servizio IIS su WEB-SRV
+    ↓
+gira come NETWORK SERVICE
+    ↓
+sulla rete si identifica come WEB-SRV$
+    ↓
+delegation configurata su WEB-SRV$ in AD
+```
+
+#### Come vedi sotto quale account gira un servizio
+```
+# Vedi tutti i servizi e il loro account
+Get-WmiObject Win32_Service | select Name, StartName, State
+
+# Output esempio:
+# Name        StartName              State
+# ----        ---------              -----
+# W3SVC       LocalSystem            Running   ← IIS gira come LOCAL SYSTEM
+# MSSQLSERVER corp\svc-sql           Running   ← SQL gira come account dominio
+# Spooler     NT AUTHORITY\SYSTEM    Running   ← Print Spooler come SYSTEM
+```
+
+#### Perché un admin sceglie un account dedicato invece di LOCAL SYSTEM
+- **LOCAL SYSTEM** ha troppi privilegi — se il servizio viene compromesso, l'attaccante ha controllo totale sulla macchina. Un account dedicato come svc-web con solo i permessi necessari limita il danno in caso di compromissione. È il principio del least privilege — dai al servizio solo quello di cui ha bisogno, niente di più.
+- In pratica però molti admin usano **LOCAL SYSTEM** o **NETWORK SERVICE** per comodità — non devono gestire password, rotazioni, permessi. E questo è esattamente perché in un pentest trovi spesso delegation configurata su account computer invece che su account utente dedicati.
+
+
+
+## Utenti Protetti
+**Protected Users** è un gruppo di sicurezza speciale introdotto in Windows Server 2012 R2 che applica automaticamente una serie di restrizioni agli account che ne fanno parte, senza bisogno di configurare nulla manualmente.
+- L'idea di Microsoft era creare un gruppo dove metti gli account più sensibili — DA, amministratori, CEO — e Windows automaticamente li protegge da tutte le tecniche di attacco più comuni.
+
+### Cosa blocca concretamente
+- Niente NTLM — gli account in Protected Users possono autenticarsi solo con Kerberos. Se un servizio supporta solo NTLM, l'utente non riesce proprio ad autenticarsi. Questo blocca Pass-the-Hash completamente — non puoi usare l'hash NTLM per autenticarti perché il DC rifiuta NTLM per quell'account.
+- Niente RC4 in Kerberos — possono usare solo AES. Questo rende Kerberoasting inutile su questi account — l'hash RC4 che ottieni non funziona.
+- Niente delega — gli account in Protected Users non possono essere delegati da nessuno. Né unconstrained, né constrained, né S4U2Self. Questo è il motivo per cui non puoi usarli con il nostro attacco di prima.
+- TGT dura solo 4 ore — invece delle solite 10. Questo limita la finestra utile di un ticket rubato.
+- Niente credenziali in cache — Windows normalmente salva un hash delle credenziali localmente per permettere il login offline. Con Protected Users questo non succede — se il DC non è raggiungibile, l'utente non riesce a loggarsi.
+
+### Perché non viene usato ovunque
+Ha degli svantaggi pratici che scoraggiano l'adozione:
+- se un servizio usa NTLM e metti il suo account in Protected Users, il servizio smette di funzionare — e spesso gli admin non sanno quali servizi usano NTLM finché non si rompono.
+- il login offline non funziona — problema per laptop che escono dalla rete aziendale.
+- richiede che tutti i DC siano almeno Windows Server 2012 R2.
+
+In pratica negli ambienti reali trovi Protected Users quasi vuoto o con pochissimi account — proprio perché richiede test accurati prima di aggiungere account critici. Nella CRTP difficilmente i DA sono in Protected Users, ma è sempre la prima cosa da verificare prima di tentare un attacco di delega.
+```
+# Verifica chi è in Protected Users
+Get-DomainGroupMember -Identity "Protected Users" | select membername, distinguishedname
+```
 
 ## Computer
 I computer (workstation) possono essere anche non joinati al dominio.
