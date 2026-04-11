@@ -1,5 +1,5 @@
 # AD-notes
-Appunti riguardo Active Directory!
+Appunti riguardo Active Directory! Questi appunti sono stati scritti con Claude e con l'aiuto della community durante le live. Alcuni attacchi non sono stati ancora verificati.
 
 Ne parlo anche in live sui miei canali:
 - 🎥 [YouTube channel](https://www.youtube.com/@CinnamonSec)

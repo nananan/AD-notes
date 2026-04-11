@@ -124,7 +124,7 @@ Get-WmiObject Win32_Service | select Name, StartName, State
 
 #### Perché un admin sceglie un account dedicato invece di LOCAL SYSTEM
 - **LOCAL SYSTEM** ha troppi privilegi — se il servizio viene compromesso, l'attaccante ha controllo totale sulla macchina. Un account dedicato come svc-web con solo i permessi necessari limita il danno in caso di compromissione. È il principio del least privilege — dai al servizio solo quello di cui ha bisogno, niente di più.
-- In pratica però molti admin usano **LOCAL SYSTEM** o **NETWORK SERVICE** per comodità — non devono gestire password, rotazioni, permessi. E questo è esattamente perché in un pentest trovi spesso delegation configurata su account computer invece che su account utente dedicati.
+- In pratica però molti admin usano **LOCAL SYSTEM** o **NETWORK SERVICE** per comodità — non devono gestire password, rotazioni, permessi.
 
 
 
