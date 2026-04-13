@@ -489,4 +489,6 @@ autenticazione relay → OK → target chiede firma pacchetti → ntlmrelayx non
 
 
 ## Esempio
-![alt text](images/lateral_movement/.png)
+![alt text](images/lateral_movement/ntlm_relay.png)
+- Il punto chiave da ricordare è che ntlmrelayx non crea una nuova autenticazione — usa quella di Mario in tempo reale. Il target ```192.168.1.10``` non sa che sta parlando con l'attaccante, vede solo una richiesta di autenticazione valida da ```CORP\mario```.
+- I due tool devono girare contemporaneamente su terminali separati — Responder cattura, ntlmrelayx redirige. Se SMB signing è enforced su ```192.168.1.10```, l'autenticazione passa ma i comandi successivi vengono rifiutati perché l'attaccante non può firmare i pacchetti.
