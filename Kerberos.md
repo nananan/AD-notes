@@ -132,6 +132,51 @@ Ci sono due modi per richiedere un ticket:
 #### AS-REQ Roasting
 Come visto in precedenza, di default un utente deve autenticarsi tramite un authenticator cifrato con la propria chiave. Tuttavia, se un utente ha la pre-autenticazione disabilitata, è possibile richiedere i dati di autenticazione per quell'utente e il KDC risponderà comunque con un AS-REP. Poiché parte di quel messaggio (la session key temporanea condivisa) è cifrata con la password dell'utente, è possibile eseguire un attacco brute-force offline per cercare di recuperare la password.
 
+**Il problema: Pre-autenticazione disabilitata**
+
+In Kerberos normale, quando un utente vuole un TGT:
+  1. Il client invia un AS_REQ con un timestamp cifrato con la propria password
+  2. Il DC decifra il timestamp per verificare che la password sia corretta
+  3. Solo allora rilascia il TGT
+
+![alt text](images/kerberos/as_rep_normale.png)
+
+Se l'account ha **DONT_REQ_PREAUTH** abilitato, il DC salta il passaggio 1 e rilascia il TGT a chiunque lo chieda, senza verificare la password.
+
+##### Perché è pericoloso
+
+Il TGT restituito nell'AS_REP contiene una porzione cifrata con la chiave derivata dalla password dell'utente. Un attaccante può:
+  1. Richiedere l'AS_REP per quell'account (senza autenticarsi)
+  2. Estrarre l'hash cifrato
+  3. Craccarlo offline con Hashcat (mode -m 18200) o John the Ripper
+
+##### Flusso dell'attacco
+
+  Attaccante ──AS_REQ (senza preauth)──► KDC
+  Attaccante ◄──AS_REP (hash cifrato)── KDC
+  Attaccante ──offline crack──► password in chiaro
+
+  Requisiti
+
+  - Solo il nome utente della vittima (nessuna password richiesta)
+  - L'account deve avere DONT_REQ_PREAUTH settato
+
+  Variante "targeted"
+
+  Se l'attaccante ha permessi GenericAll/GenericWrite su un account, può:
+  1. Abilitare DONT_REQ_PREAUTH con PowerView (Set-DomainObject -XOR @{useraccountcontrol=4194304})
+  2. Eseguire l'attacco
+  3. Disabilitare il flag (per non lasciare tracce)
+
+  Differenza con Kerberoasting
+
+
+  In sostanza: AS-REPRoasting attacca utenti che non richiedono pre-autenticazione, mentre Kerberoasting attacca account
+   di servizio con SPN registrati.
+
+
+
+
 #### Kerberoasting
 In modo simile, quando un utente ha un TGT, può richiedere un Service Ticket per qualsiasi servizio esistente. La risposta del KDC (TGS-REP) contiene informazioni cifrate con il segreto del service account. Se il service account ha una password debole, è possibile eseguire lo stesso tipo di attacco brute-force offline per recuperare la password di quell'account.
 
@@ -154,4 +199,6 @@ I ticket sono protetti da chiavi segrete per impedirne la falsificazione (il TGT
 È possibile enumerare utenti e testare password usando il protocollo Kerberos:
 - Richiedendo un TGT per un utente specifico, il server risponde in modo diverso a seconda che l'utente esista o meno nel database → utile per enumerare utenti validi
 - Cifrando l'authenticator con password diverse, è possibile verificare se una password è valida per un determinato utente → password spraying
+
+
 
