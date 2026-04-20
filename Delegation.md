@@ -63,15 +63,12 @@
 # Delegation
 Il protocollo Kerberos consente a un utente di autenticarsi a un servizio per poterlo utilizzare, e la delega Kerberos permette a tale servizio di autenticarsi a un altro servizio come l'utente originale.
 
-![alt text](esempio_delegation.png)
+![alt text](images/delegation/esempio_delegation.png)
 
 In questo esempio, un utente si autentica in WEBSRV per accedere al sito web. Una volta autenticato sul sito web, l'utente deve accedere alle informazioni memorizzate in un database, ma non dovrebbe avere accesso a tutte le informazioni in esso contenute. L'account di servizio che gestisce il sito web deve comunicare con il database utilizzando i diritti dell'utente in modo che il database consenta l'accesso solo alle risorse a cui l'utente ha il diritto di accedere. È qui che entra in gioco la delega. L'account di servizio, in questo caso ```WEBSRV$```, simulerà l'utente quando accede al database. E questo magico processo è chiamato delegation.
 
 
 ![alt text](images/delegation/differenze_delegation.png)
-
-
-
 
 
 ## Unconstrained Delegation
@@ -81,13 +78,23 @@ Consente ad un servizio, in questo caso WEBSRV, di impersonare un utente durante
 Affinché un account disponga di un unconstrained delegation, nella scheda **Delegation** dell'account, la voce ```Trust this computer for delegation to any service (Kerberos only)``` deve essere selezionata:
 ![alt text](images/delegation/unconstrained_delegation_properties.png)
 
-Solo un amministratore o un utente con privilegi elevati, a cui tali privilegi sono stati esplicitamente concessi, può impostare questa opzione per altri account. Più precisamente, è necessario disporre del provilegio **SeEnableDelegationPrivilege** per eseguire questa azione. Un account di servizio non può modificare le proprie impostazioni per aggiungere questa opzione.
+Solo un amministratore o un utente con privilegi elevati, a cui tali privilegi sono stati esplicitamente concessi, può impostare questa opzione per altri account. Più precisamente, è necessario disporre del provilegio **SeEnableDelegationPrivilege** per eseguire questa azione. Un account di servizio non può modificare le proprie impostazioni per aggiungere questa opzione. Tipicamente solo un Domain Admin ha quel flag. Questo è importante perché significa che se trovi un account con questo flag, un amministratore lo ha configurato intenzionalmente (o per errore).
 
 - Nello specifico, quando questa opzione è abilitata, il flag ```TRUSTED_FOR_DELEGATION``` viene impostato sull'account tra i flag del Controllo account utente (UAC).
 - Quando questo flag è impostato su un account di servizio e un utente effettua una richiesta TGS per accedere a tale servizio, il controller di dominio aggiungerà una copia del TGT dell'utente al ticket TGS. In questo modo, l'account di servizio può estrarre questo TGT e quindi effettuare richieste TGS al controller di dominio utilizzando una copia del TGT dell'utente. Il servizio disporrà quindi di un ticket TGS o di un ticket di servizio (ST) valido come l'utente e potrà accedere a qualsiasi servizio come l'utente.
-
-
-
+  ```
+  Quando un account di servizio ha il flag 
+  1. Utente fa TGS-REQ per accedere al Servizio Web
+          ↓
+  2. Il DC aggiunge una COPIA del TGT dell'utente dentro il TGS
+          ↓
+  3. Il Servizio Web riceve il TGS, estrae il TGT dell'utente
+          ↓
+  4. Il Servizio Web usa quel TGT per fare richieste al DC
+    come se fosse l'utente
+          ↓
+  5. Accede al Database (o a QUALSIASI altro servizio) AS the user
+  ```
 
 ![alt text](images/delegation/Unconstrained_Delegation.png)
 
@@ -101,6 +108,16 @@ Solo un amministratore o un utente con privilegi elevati, a cui tali privilegi s
 ### Perché "delegates his TGT" è così pericoloso
 - Il TGT è la chiave master di Mario, con esso puoi chiedere ticket per qualsiasi servizio nel dominio. Quando Mario lo consegna a Service A, sta dicendo di fatto **"fai qualsiasi cosa per conto mio, verso chiunque"**.
 - La cosa grave è che Mario non sceglie di farlo consapevolmente, **è Windows che lo fa automaticamente quando Service A ha la flag di unconstrained delegation**. Mario non vede nessun avviso, nessuna conferma.
+- Il servizio può impersonare l'utente verso qualsiasi risorsa del dominio, non solo il Database. Se un Domain Admin si autentica a quel servizio:
+  ```
+  Attaccante controlla il Servizio Web
+          ↓
+  Domain Admin si autentica al servizio
+          ↓
+  Attaccante estrae il TGT del Domain Admin dalla memoria
+          ↓
+  Attaccante è Domain Admin
+  ```
 
 ### Lo scenario di attacco concreto
 Tu hai compromesso Service A (che ha unconstrained delegation). Aspetti che un DA si autentichi a quel servizio — magari forzandolo tu stesso con il printer bug (vedi pagina AD.md per saperne di più del printer bug):
@@ -166,7 +183,8 @@ Il DC decifra il TGT con krbtgt, trova la chiave di sessione dentro, verifica l'
 
 ###### Il problema dell'authenticator
 ![alt text](images/meme/meme_wait_a_minute.png)
-Aspetta — hai detto che l'authenticator è cifrato con la chiave di sessione contenuta nel TGT. Ma quella chiave di sessione non la conosci tu — è dentro il TGT cifrato con krbtgt, che non puoi leggere.
+
+Aspetta, hai detto che l'authenticator è cifrato con la chiave di sessione contenuta nel TGT. Ma quella chiave di sessione non la conosci tu — è dentro il TGT cifrato con krbtgt, che non puoi leggere.
 
 La risposta è che quando Rubeus cattura il TGT dalla memoria di lsass, **cattura non solo il TGT ma anche la chiave di sessione associata — perché lsass le tiene entrambe in memoria per poterle usare**. Quindi hai tutto il necessario per costruire una TGS-REQ valida.
 ```
@@ -198,6 +216,39 @@ lsass memory su Service A:
 
 
 ## Constrained Delegation (S4U2Proxy)
+Poiché la uncontrained delegation non è molto restrittiva, la constrained delegation è un altro tipo di delega "più restrittiva". In questo caso, un servizio ha il diritto di impersonare un utente presso un elenco ben definito di servizi. In questo esempio, ```WEBSRV``` può inoltrare l'autenticazione solo al ```SQL/DBSRV``` servizio ma non agli altri.
+
+![alt text](images/delegation/esempio_Constrained_Delegation.png)
+
+È possibile configurare la constrained delegation nello stesso punto in cui si configura la unconstrained delegation, cioè nella scheda ```Delegation``` dell'account. L'opzione ```Trust this computer for delegation to specified services only``` deve essere selezionata. Come per la unconstrained delegation, questa opzione non è modificabile di default da un account.
+
+![alt text](images/delegation/Constrained_Delegation_opzione.png)
+
+Quando questa opzione è abilitata, l'elenco dei servizi consentiti per la delega viene memorizzato nell'attributo ```msDS-AllowedToDelegateTo``` dell'account responsabile della delega.
+
+![alt text](images/delegation/msDS-AllowedToDelegateTo.png)
+
+Con Unconstrained, il DC metteva il TGT direttamente nel TGS. Con Constrained è diverso:
+```
+1. Utente si autentica a WEBSRV
+   → manda il suo TGS a WEBSRV
+
+2. WEBSRV vuole accedere a SQL/DBSRV per conto dell'utente
+   → Non ha il TGT dell'utente!
+   → Fa una richiesta TGS speciale al DC con:
+      ├── additional tickets = copia del TGS dell'utente
+      └── cname-in-addl-tkt flag = "usa le info dell'utente, non le mie"
+
+3. Il DC verifica:
+   ├── WEBSRV ha SQL/DBSRV in msDS-AllowedToDelegateTo?
+   └── Il TGS dell'utente è forwardable (che è di default ma si può disabilitare con il flag "Account is sensitive and cannot be delegated" nelle falg UAC dell'utente)?
+
+4. DC restituisce a WEBSRV un TGS per SQL/DBSRV
+   ma con l'identità dell'utente dentro
+
+5. WEBSRV accede a SQL/DBSRV AS the user
+```
+
 ![alt text](images/delegation/Constrained_Delegation.png)
 
 Con constrained delegation, il DC controlla la lista ```msds-allowedtodelegateto``` di Service A prima di rilasciare il TGS. Se Service A ha nella lista solo cifs/serviceB, il DC rilascia TGS solo per quel servizio e rifiuta qualsiasi altra richiesta.
@@ -214,6 +265,54 @@ Unconstrained:  DC dà TGT a Service A → Service A fa da solo tutto
 Constrained:    Service A chiede TGS al DC ogni volta → DC decide se concederlo
 ```
 
+### S4U2Proxy & S4U2Self
+S4U2Proxy (Service for User to Proxy) e S4U2Self (Service for User to Self) sono due estensioni di Active Directory che consentono la delega.
+
+#### S4U2Proxy
+È semplicemente il meccanismo di delegation:
+```
+Utente → TGS → WEBSRV
+WEBSRV → TGS request (con TGS utente dentro) → DC
+DC → TGS per DBSRV as the user → WEBSRV
+```
+Richiede che il servizio abbia già un TGS dell'utente da embeddare nella richiesta.
+
+#### S4U2Self — Il problema che risolve
+Cosa succede se l'utente si autentica a WEBSRV tramite NTLM invece di Kerberos?
+```
+Utente → autentica con NTLM → WEBSRV
+WEBSRV vuole accedere a DBSRV as the user
+❌ Ma non ha nessun TGS dell'utente da embeddare!
+```
+S4U2Self risolve questo problema!
+
+##### Come funziona S4U2Self
+```
+1. Utente si autentica a WEBSRV via NTLM
+         ↓
+2. WEBSRV chiede al DC un TGS per SE STESSO
+   on behalf of quell'utente (senza che l'utente lo sappia)
+   "Dammi un TGS per WEBSRV come se fosse jenna.smith"
+         ↓
+3. DC restituisce un TGS forwardable per WEBSRV
+   con l'identità di jenna.smith dentro
+         ↓
+4. Ora WEBSRV ha un TGS dell'utente e può fare S4U2Proxy
+         ↓
+5. WEBSRV → TGS request (con quel TGS dentro) → DC
+         ↓
+6. DC → TGS per DBSRV as jenna.smith
+```
+
+S4U2Self permette al servizio di ottenere un TGS per un utente arbitrario, anche senza che quell'utente si sia mai autenticato al servizio.
+Questo è il motivo delle due opzioni nella Constrained Delegation:
+
+![alt text](images/delegation/S4U2Self.png)
+
+Se un attaccante compromette un account di servizio con "Use any authentication protocol":
+![alt text](images/delegation/S4U2Self_any_protocol.png)
+
+Può usare S4U2Self per generare un TGS come qualsiasi utente del dominio (anche Domain Admin), senza che quell'utente abbia mai toccato quel servizio, e poi S4U2Proxy per accedere a risorse protette as Domain Admin.
 
 ### L'unica eccezione — protocol transition
 ![alt text](images/delegation/TrustedToAuthForDelegation.png)
@@ -435,6 +534,45 @@ Get-DomainGroupMember -Identity "Protected Users" | select membername
 ```
 
 ## Resource-Based Constrained Delegation (RBCD)
+Finora, la gestione della delega avveniva a livello del servizio che intendeva assumere l'identità di un utente per accedere a una risorsa. La RBCD inverte le responsabilità e sposta la gestione della delega alla risorsa finale. Non è più a livello di servizio che si elencano le risorse a cui è possibile delegare, ma a livello di risorsa viene creato un elenco di fiducia. Qualsiasi account presente in questo elenco di fiducia ha il diritto di delegare l'autenticazione per accedere alla risorsa.
+
+In questo esempio, l'elenco di fiducia dell'account ```DBSRV$``` contiene solo l'account ```WEBSRV$```. Pertanto, un utente sarà autorizzato se ```WEBSRV$``` desidera impersonare un utente per accedere a un servizio esposto da DBSRV. D'altra parte, agli altri account non è consentito delegare l'autenticazione a nessun servizio fornito da DBSRV.
+
+![alt text](images/delegation/esempio_RBCD.png)
+
+A differenza degli altri due tipi di delega, la risorsa ha il diritto di modificare il proprio elenco di account attendibili. Pertanto, qualsiasi account di servizio ha il diritto di modificare il proprio elenco di account attendibili per consentire a uno o più account di delegare l'autenticazione a se stessi.
+
+Se un account di servizio aggiunge uno o più account al proprio elenco di account attendibili, aggiorna l'attributo ```msDS-AllowedToActOnBehalfOfOtherIdentity``` nella directory.
+
+Nel seguente comando PowerShell, aggiungiamo l'account ```WEBSRV$``` all'elenco di fiducia di ```DBSRV```:
+```
+PS C:\Tools> Import-Module ActiveDirectory
+PS C:\Tools> Set-ADComputer DBSRV -PrincipalsAllowedToDelegateToAccount (Get-ADComputer WEBSRV)
+```
+
+![alt text](images/delegation/RBCD_addAccount.png)
+
+Il flusso è identico alla Constrained:
+```
+1. Utente si autentica a WEBSRV → manda TGS
+
+2. WEBSRV fa TGS request al DC con:
+   ├── additional tickets = TGS dell'utente
+   └── cname-in-addl-tkt flag settato
+
+3. Il DC verifica:
+   └── WEBSRV è nella lista msDS-AllowedToActOnBehalfOfOtherIdentity di DBSRV?
+
+4. DC restituisce TGS per DBSRV con identità dell'utente
+
+5. WEBSRV accede a DBSRV AS the user
+```
+
+Con la Constrained Delegation serviva un Domain Admin per configurarla. Con RBCD:
+- Il proprietario di un oggetto AD può modificare ```msDS-AllowedToActOnBehalfOfOtherIdentity``` su sé stesso
+
+Quindi se un attaccante ha scrittura su un oggetto computer, può configurare RBCD su quell'oggetto e ottenere l'impersonation senza bisogno di privilegi di Domain Admin.
+
 ![alt text](images/delegation/RBCD.png)
 
 ### Il problema della constrained delegation classica
