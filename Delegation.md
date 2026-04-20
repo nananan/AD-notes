@@ -1,5 +1,6 @@
 - [Delegation](#delegation)
   - [Unconstrained Delegation](#unconstrained-delegation)
+    - [Il flusso:](#il-flusso)
     - [Perché "delegates his TGT" è così pericoloso](#perché-delegates-his-tgt-è-così-pericoloso)
     - [Lo scenario di attacco concreto](#lo-scenario-di-attacco-concreto)
       - [Piccola sottigliezza interessante!](#piccola-sottigliezza-interessante)
@@ -60,13 +61,37 @@
 
 
 # Delegation
+Il protocollo Kerberos consente a un utente di autenticarsi a un servizio per poterlo utilizzare, e la delega Kerberos permette a tale servizio di autenticarsi a un altro servizio come l'utente originale.
+
+![alt text](esempio_delegation.png)
+
+In questo esempio, un utente si autentica in WEBSRV per accedere al sito web. Una volta autenticato sul sito web, l'utente deve accedere alle informazioni memorizzate in un database, ma non dovrebbe avere accesso a tutte le informazioni in esso contenute. L'account di servizio che gestisce il sito web deve comunicare con il database utilizzando i diritti dell'utente in modo che il database consenta l'accesso solo alle risorse a cui l'utente ha il diritto di accedere. È qui che entra in gioco la delega. L'account di servizio, in questo caso ```WEBSRV$```, simulerà l'utente quando accede al database. E questo magico processo è chiamato delegation.
+
+
 ![alt text](images/delegation/differenze_delegation.png)
 
 
+
+
+
 ## Unconstrained Delegation
+Consente ad un servizio, in questo caso WEBSRV, di impersonare un utente durante l'accesso in ogni servizio. Si tratta di un privilegio molto permissivo e pericoloso, pertanto non tutti gli utenti possono concederlo.
+![alt text](images/delegation/Unconstrained_Delegation_WEB.png)
+
+Affinché un account disponga di un unconstrained delegation, nella scheda **Delegation** dell'account, la voce ```Trust this computer for delegation to any service (Kerberos only)``` deve essere selezionata:
+![alt text](images/delegation/unconstrained_delegation_properties.png)
+
+Solo un amministratore o un utente con privilegi elevati, a cui tali privilegi sono stati esplicitamente concessi, può impostare questa opzione per altri account. Più precisamente, è necessario disporre del provilegio **SeEnableDelegationPrivilege** per eseguire questa azione. Un account di servizio non può modificare le proprie impostazioni per aggiungere questa opzione.
+
+- Nello specifico, quando questa opzione è abilitata, il flag ```TRUSTED_FOR_DELEGATION``` viene impostato sull'account tra i flag del Controllo account utente (UAC).
+- Quando questo flag è impostato su un account di servizio e un utente effettua una richiesta TGS per accedere a tale servizio, il controller di dominio aggiungerà una copia del TGT dell'utente al ticket TGS. In questo modo, l'account di servizio può estrarre questo TGT e quindi effettuare richieste TGS al controller di dominio utilizzando una copia del TGT dell'utente. Il servizio disporrà quindi di un ticket TGS o di un ticket di servizio (ST) valido come l'utente e potrà accedere a qualsiasi servizio come l'utente.
+
+
+
+
 ![alt text](images/delegation/Unconstrained_Delegation.png)
 
-###Il flusso:
+### Il flusso:
 - 1-2 — Mario si autentica al DC e ottiene il suo TGT.
 - 3-4 — Mario chiede un TGS per Service A e lo ottiene.
 - 5 — "authenticates with TGS and delegates his TGT" — questo è il punto critico. Mario manda al Service A non solo il TGS, ma anche il suo TGT completo. Service A ora ha in memoria il TGT originale di Mario.
@@ -80,7 +105,7 @@
 ### Lo scenario di attacco concreto
 Tu hai compromesso Service A (che ha unconstrained delegation). Aspetti che un DA si autentichi a quel servizio — magari forzandolo tu stesso con il printer bug (vedi pagina AD.md per saperne di più del printer bug):
 ```
-powershell# Forza il DC a autenticarsi a Service A (printer bug)
+# Forza il DC a autenticarsi a Service A (printer bug)
 SpoolSample.exe dc.corp.local serviceA.corp.local
 
 # Nel frattempo su Service A aspetti il TGT del DC
