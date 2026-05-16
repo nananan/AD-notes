@@ -2082,7 +2082,6 @@ C:\>hostname
 DC01
 ```
 
-
 ### Esempio
 - WEB-SRV = Service A — hai compromesso questa macchina, sei local admin
 - FILE-SRV = Service B — ha nel suo attributo msds-allowedtoactonbehalfofotheridentity il SID di WEB-SRV$
